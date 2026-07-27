@@ -223,6 +223,12 @@ class TestHealthz:
         assert body["cached_plates"] == 0
         assert body["history"] == 0
 
+    def test_reports_the_running_version(self, client):
+        """Lets you confirm from Portainer that a redeploy actually took."""
+        from birdframe import __version__
+
+        assert client.get("/healthz").get_json()["version"] == __version__
+
     def test_failing_poller_returns_503(self, tmp_path, no_warm):
         """The container healthcheck depends on this status code."""
         settings = Settings(

@@ -18,6 +18,7 @@ import secrets
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
+from . import __version__
 from .config import WEB_DIR, Settings
 from .gallery import DEMO_BIRDS, Gallery, utcnow_iso
 from .payload import parse_webhook
@@ -186,4 +187,6 @@ def _register_routes(
         """
         body = gallery.health()
         ok = gallery.is_healthy()
-        return jsonify({"ok": ok, **body}), (200 if ok else 503)
+        # Which release is on the wall, so you can tell from Portainer whether a
+        # redeploy actually took.
+        return jsonify({"ok": ok, "version": __version__, **body}), (200 if ok else 503)

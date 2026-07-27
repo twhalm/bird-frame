@@ -1,6 +1,9 @@
 [project]
 name = "birdframe"
-version = "0.2.0"
+# Placeholder, never bumped. Releases are identified by git tag alone and nothing
+# commits a version back here; the running version comes from BIRDFRAME_VERSION
+# and is reported by /healthz. tests/test_version.py holds this to 0.0.0.
+version = "0.0.0"
 description = "Audubon plates on a screen, driven by BirdNET-Go detections"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +43,18 @@ test = ["pytest>=9.1.1", "pytest-cov>=7.0.0", "responses>=0.25.9"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# ------------------------------------------------------------------------- uv
+
+[tool.uv]
+# Pin the index in the project rather than inheriting whatever is in the
+# developer's ~/.config/uv/uv.toml. A corporate mirror there gets baked into
+# uv.lock's URLs, and CI (which cannot resolve that host) then fails on a lock
+# it did not create. Public PyPI keeps the lockfile portable.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/birdframe"]

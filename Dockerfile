@@ -30,7 +30,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ------------------------------------------------------------------- runtime
 FROM python:3.13-slim-bookworm AS runtime
 
-ENV PYTHONUNBUFFERED=1 \
+# Set by the release workflow from the semantic-release version, so `docker
+# inspect` on a running container tells you which release it came from.
+ARG BIRDFRAME_VERSION=dev
+
+LABEL org.opencontainers.image.title="BirdFrame" \
+      org.opencontainers.image.description="Audubon plates on a screen, driven by BirdNET-Go detections" \
+      org.opencontainers.image.source="https://github.com/twhalm/bird-frame" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${BIRDFRAME_VERSION}"
+
+ENV BIRDFRAME_VERSION=${BIRDFRAME_VERSION} \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     PORT=8080
@@ -51,19 +62,12 @@ USER birdframe
 VOLUME ["/cache"]
 EXPOSE 8080
 
-# /healthz returns 503 when the poller has been failing for three cycles, so an
-# unreachable BirdNET-Go marks the container unhealthy instead of going unnoticed.
+# Shell form so $PORT expands. The healthcheck must follow PORT too, or changing
+# it makes the container permanently unhealthy while the app is fine.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"]
+  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/healthz', timeout=4).status == 200 else 1)"
 
 # One gunicorn worker on purpose: the rotation and the poller live in process
 # memory, so multiple workers would each hold a different gallery. Threads handle
 # the concurrent image requests fine.
-CMD ["gunicorn", \
-     "--bind", "0.0.0.0:8080", \
-     "--workers", "1", \
-     "--threads", "8", \
-     "--graceful-timeout", "10", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "birdframe.wsgi:app"]
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 8 --graceful-timeout 10 --access-logfile - --error-logfile - birdframe.wsgi:app"]

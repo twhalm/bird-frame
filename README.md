@@ -8,15 +8,49 @@ mat alone.
 
 ## Run it
 
+The image is published to GHCR and is public, so nothing needs authenticating.
+Only released versions are published — there is no `:latest`, so pick a version
+from [releases](https://github.com/twhalm/bird-frame/releases):
+
 ```bash
-docker compose up -d --build
+docker run -d --name birdframe -p 8088:8088 \
+  -v birdframe-cache:/cache \
+  -e PORT=8088 \
+  -e BIRDNET_URL=http://birdnet-go:8080 \
+  ghcr.io/twhalm/bird-frame:1.0.0
 ```
 
-Open `http://<docker-host>:8080` and press F11. Press `d` on the page to seed
+Or as a compose stack — this is the whole thing, and works as-is in Portainer
+(Stacks -> Add stack -> Web editor):
+
+```yaml
+services:
+  birdframe:
+    image: ghcr.io/twhalm/bird-frame:1.0.0
+    container_name: birdframe
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - PORT=8088
+      - BIRDNET_URL=http://birdnet-go:8080
+      - TZ=America/Los_Angeles
+    volumes:
+      - birdframe-cache:/cache
+
+volumes:
+  birdframe-cache:
+```
+
+Add any of the settings below to `environment` as you need them. If BirdNET-Go
+runs in a different stack, either use its host IP in `BIRDNET_URL` or attach this
+service to its network so the container name resolves.
+
+Open `http://<docker-host>:8088` and press F11. Press `d` on the page to seed
 demo birds without waiting for a real detection.
 
-Set `BIRDNET_URL` in `docker-compose.yml` to your BirdNET-Go address. That is the
-only setting that matters.
+Set `BIRDNET_URL` to your BirdNET-Go address. That is the only setting that
+matters.
 
 ## Settings
 
@@ -31,8 +65,10 @@ only setting that matters.
 | `CACHE_DIR` | `/cache` | Where plates and history are cached. |
 | `CA_BUNDLE` | *(unset)* | PEM for a TLS-inspecting proxy's CA, if you need one. |
 | `VERIFY_TLS` | `true` | Set `false` to skip certificate verification for plate downloads. Last resort — prefer `CA_BUNDLE`. |
+| `PORT` | `8080` | Port inside the container. BirdNET-Go usually holds 8080, so the examples above use 8088. Publish the same port you set. |
 | `LOG_LEVEL` | `INFO` | |
 | `DEV` | `false` | Re-read the template on every request. Costs a stat per hit; development only. |
+| `BIRDFRAME_VERSION` | `dev` | Set by the release build from the git tag, and reported by `/healthz`. Leave alone. |
 
 URL options: `?rotate=150&poll=20` (seconds), `?light=-35,40` (bevel light
 azimuth and elevation, in degrees), and `?token=...` if you set `WEBHOOK_TOKEN`

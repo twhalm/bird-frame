@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # main is covered by release.yml, which calls this workflow. Without this the
+    # same checks would run twice on every push to main.
+    branches-ignore: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

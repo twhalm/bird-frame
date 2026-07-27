@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the tag and the GitHub Release
+      packages: write       # push to GHCR
+      issues: write         # semantic-release checks these even with comments off
+      pull-requests: write
+      id-token: write       # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # semantic-release needs every commit since the last tag.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Decide the version, tag it, write the release notes
+        id: semrel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx --yes \
+            -p semantic-release@24 \
+            -p @semantic-release/commit-analyzer@13 \
+            -p @semantic-release/release-notes-generator@14 \
+            -p @semantic-release/github@11 \
+            -p conventional-changelog-conventionalcommits@9 \
+            semantic-release
+
+          # semantic-release exits 0 either way and creates the tag locally when it
+          # releases, so the tag is the signal.
+          version=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.semrel.outputs.version != ''
+      - uses: docker/setup-buildx-action@v3
+        if: steps.semrel.outputs.version != ''
+
+      - name: Log in to GHCR
+        if: steps.semrel.outputs.version != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.semrel.outputs.version != ''
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # A TV box may well be a Raspberry Pi.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.semrel.outputs.version }}
+          build-args: |
+            BIRDFRAME_VERSION=${{ steps.semrel.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.semrel.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the build
+        if: steps.semrel.outputs.version != ''
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Smoke-test the published image
+        if: steps.semrel.outputs.version != ''
+        env:
+          REF: ${{ env.IMAGE }}:${{ steps.semrel.outputs.version }}
+          V: ${{ steps.semrel.outputs.version }}
+        run: |
+          # Pull what was actually published, not a local build.
+          docker run -d --name smoke -p 8080:8080 "$REF"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz > /dev/null 2>&1 && break
+            sleep 1
+          done
+          body=$(curl -fsS http://127.0.0.1:8080/healthz)
+          echo "$body"
+          echo "$body" | grep -q '"ok": *true'
+          echo "$body" | grep -q "\"version\": *\"${V}\""
+          curl -fsS http://127.0.0.1:8080/ > /dev/null
+          curl -fsS -X POST http://127.0.0.1:8080/api/demo | grep -q '"added": *6'
+          docker logs smoke
+          docker rm -f smoke
+
+      - name: Summarise
+        if: steps.semrel.outputs.version != ''
+        run: |
+          echo "Pushed \`${IMAGE}:${{ steps.semrel.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+
 __all__ = ["__version__", "create_app"]
 
-__version__ = "0.2.0"
+# Releases are identified by git tag alone -- nothing commits a version back into
+# this file, so a literal here would go stale and then lie in /healthz. The
+# release build passes the tag in as BIRDFRAME_VERSION; a local or source run has
+# no release to name and says so.
+__version__ = os.environ.get("BIRDFRAME_VERSION") or "dev"
 
 
 def __getattr__(name: str) -> object:
