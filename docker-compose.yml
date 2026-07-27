@@ -1,0 +1,49 @@
+# BirdFrame - Audubon plates on the wall, driven by BirdNET-Go.
+#
+# In Portainer: Stacks -> Add stack -> paste this (or point it at your git repo),
+# set BIRDNET_URL below to your BirdNET-Go address, then Deploy.
+
+services:
+  birdframe:
+    build: .
+    # Or, if you push it to a registry, drop `build` and use:
+    # image: your-registry/birdframe:latest
+    container_name: birdframe
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Plate images are cached here. Survives rebuilds, so each plate is only
+      # ever downloaded once.
+      - birdframe-cache:/cache
+    environment:
+      # Poll BirdNET-Go for ALL detections. Strongly recommended: BirdNET-Go's
+      # webhook fires only for *new* species by default, so webhook-only mode
+      # gives you a nearly static picture. Leave blank to disable polling.
+      BIRDNET_URL: "http://birdnet-go:8080"
+      POLL_SECONDS: "60"
+
+      # Ignore detections the model isn't confident about.
+      MIN_CONFIDENCE: "0.65"
+
+      # How many detections to keep in the rotation.
+      HISTORY_SIZE: "40"
+
+      # Keep false so a species with no verified plate never shows a wrong bird.
+      SHOW_UNMATCHED: "false"
+
+      LOG_LEVEL: "INFO"
+      TZ: "America/Los_Angeles"
+
+    # If BirdNET-Go runs in another compose stack, join its network so
+    # `http://birdnet-go:8080` resolves. Otherwise use the host IP above.
+    # networks:
+    #   - birdnet
+
+volumes:
+  birdframe-cache:
+
+# networks:
+#   birdnet:
+#     external: true
+#     name: birdnet-go_default
