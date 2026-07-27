@@ -294,8 +294,13 @@ body {
     } catch (_) { /* server restarting; next tick will pick it up */ }
   }
 
+  // 'd' seeds demo birds. ?token=... is forwarded, so the key still works when
+  // WEBHOOK_TOKEN is set.
   addEventListener("keydown", e => {
-    if (e.key === "d") fetch("/api/demo", { method: "POST" }).then(poll);
+    if (e.key !== "d") return;
+    const token = params.get("token");
+    const url = token ? `/api/demo?token=${encodeURIComponent(token)}` : "/api/demo";
+    fetch(url, { method: "POST" }).then(poll).catch(() => {});
   });
 
   poll();

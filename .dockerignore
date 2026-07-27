@@ -1,5 +1,9 @@
-.venv/
-.localcache/
-__pycache__/
-*.pyc
-.git/
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+
+# Allowlist rather than a denylist: the old denylist named .localcache/ while the
+# real directory is .localcache-ca/, so a corporate CA bundle was silently going
+# into every build context, along with 10MB of docs/ screenshots.

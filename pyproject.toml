@@ -1,0 +1,129 @@
+[project]
+name = "birdframe"
+version = "0.2.0"
+description = "Audubon plates on a screen, driven by BirdNET-Go detections"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Troy Halm" }]
+keywords = ["birdnet", "audubon", "digital-frame", "birding"]
+classifiers = [
+  "Private :: Do Not Upload",
+  "Framework :: Flask",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+  "flask>=3.1.3,<4",
+  "requests>=2.34.2,<3",
+  "gunicorn>=26.0.0,<27",
+]
+
+[project.scripts]
+birdframe = "birdframe.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/thalm/birdframe"
+
+[dependency-groups]
+# Dev tooling. Excluded from the image via `uv sync --no-dev`.
+dev = [
+  { include-group = "test" },
+  "mypy>=2.3.0",
+  "ruff>=0.16.0",
+  "types-requests>=2.32.0",
+]
+test = ["pytest>=9.1.1", "pytest-cov>=7.0.0", "responses>=0.25.9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/birdframe"]
+
+# ---------------------------------------------------------------------- ruff
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",      # pycodestyle
+  "F",           # pyflakes
+  "I",           # isort
+  "UP",          # pyupgrade
+  "B",           # bugbear
+  "C4",          # comprehensions
+  "SIM",         # simplify
+  "RUF",         # ruff-specific
+  "ANN",         # annotations
+  "S",           # bandit
+  "PTH",         # prefer pathlib
+  "RET",         # return style
+  "TID",         # tidy imports
+  "LOG", "G",    # logging correctness
+]
+ignore = [
+  "ANN401",  # Any is the honest type for "whatever the webhook sent"
+  "S101",    # assert is fine in tests
+  "SIM105",  # contextlib.suppress is not clearer than try/except: pass here
+  # Typographic apostrophes are deliberate: Audubon's plate names contain them
+  # and normalise() exists precisely to fold them.
+  "RUF001",
+  "RUF002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S105", "S106", "PTH"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------- mypy
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+# Test bodies are exercised by running them; annotating every fixture and every
+# `def test_x(client)` is noise that finds no bugs.
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+
+# --------------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--import-mode=importlib",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["birdframe"]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]

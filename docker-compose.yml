@@ -13,8 +13,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Plate images are cached here. Survives rebuilds, so each plate is only
-      # ever downloaded once.
+      # Plate images and the detection history are cached here. Survives
+      # rebuilds, so each plate is only ever downloaded once and a restart puts
+      # the previous gallery straight back on the wall.
       - birdframe-cache:/cache
     environment:
       # Poll BirdNET-Go for ALL detections. Strongly recommended: BirdNET-Go's
@@ -26,14 +27,25 @@ services:
       # Ignore detections the model isn't confident about.
       MIN_CONFIDENCE: "0.65"
 
-      # How many detections to keep in the rotation.
+      # How many detections stay in the rotation.
       HISTORY_SIZE: "40"
 
-      # Keep false so a species with no verified plate never shows a wrong bird.
-      SHOW_UNMATCHED: "false"
+      # Optional shared secret for POST /webhook and POST /api/demo. Unset means
+      # both are open, which is fine on a trusted LAN and not otherwise.
+      # WEBHOOK_TOKEN: "change-me"
 
       LOG_LEVEL: "INFO"
       TZ: "America/Los_Angeles"
+
+    # Small: one gunicorn worker, and the plate cache is on the volume, not in
+    # memory. Raise if you have a very large HISTORY_SIZE.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+    security_opt:
+      - no-new-privileges:true
 
     # If BirdNET-Go runs in another compose stack, join its network so
     # `http://birdnet-go:8080` resolves. Otherwise use the host IP above.

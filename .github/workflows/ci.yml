@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: ruff format
+        run: uv run ruff format --check --diff .
+      - name: ruff lint
+        run: uv run ruff check --output-format=github .
+      - name: mypy
+        run: uv run mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from requires-python, and the version the image ships.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync
+      - name: pytest
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.13'
+        with:
+          name: coverage
+          path: coverage.xml
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: birdframe:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Boot it and check /healthz
+        run: |
+          # Webhook-only mode: no BIRDNET_URL, so the poller stays off and the
+          # healthcheck reflects the app alone.
+          docker run -d --name birdframe -p 8080:8080 birdframe:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
+              echo "up after ${i}s"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz | tee /dev/stderr | grep -q '"ok": *true'
+          # The page must render and the demo seeder must find every plate.
+          curl -fsS http://127.0.0.1:8080/ > /dev/null
+          curl -fsS -X POST http://127.0.0.1:8080/api/demo | grep -q '"added": *6'
+      - name: Container logs
+        if: always()
+        run: docker logs birdframe || true
+      - name: Clean up
+        if: always()
+        run: docker rm -f birdframe || true

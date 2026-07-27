@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Files the container reads must be LF regardless of the checkout platform: CRLF
+# in a shell script or Dockerfile heredoc breaks inside Linux.
+Dockerfile      text eol=lf
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.py            text eol=lf
+*.toml          text eol=lf
+uv.lock         text eol=lf
+
+*.png           binary
+*.jpg           binary

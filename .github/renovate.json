@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "America/Los_Angeles",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 3,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"]
+  },
+  "packageRules": [
+    {
+      "description": "Dev tooling moves fast and cannot break production; batch it.",
+      "matchDepTypes": ["dev"],
+      "groupName": "dev tooling",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "description": "Runtime deps get their own PRs so CI is attributable.",
+      "matchPackageNames": ["flask", "requests", "gunicorn"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Security fixes should not wait for the Monday window.",
+      "matchDatasources": ["pypi"],
+      "vulnerabilityAlerts": {
+        "schedule": ["at any time"]
+      }
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}
