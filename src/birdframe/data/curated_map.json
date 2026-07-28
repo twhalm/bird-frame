@@ -30,6 +30,7 @@
     "Melospiza lincolnii":        { "plate": 193, "audubon": "Lincoln Finch" },
     "Passerella iliaca":          { "plate": 108, "audubon": "Fox-coloured Sparrow" },
     "Pipilo erythrophthalmus":    { "plate": 29,  "audubon": "Towee Bunting" },
+    "Pipilo maculatus":           { "plate": 29,  "audubon": "Towee Bunting" },
     "Pooecetes gramineus":        { "plate": 94,  "audubon": "Grass Finch / Bay-winged Bunting" },
     "Chondestes grammacus":       { "plate": 391, "audubon": "Lark Finch" },
     "Ammodramus savannarum":      { "plate": 130, "audubon": "Yellow-winged Sparrow" },
@@ -98,6 +99,7 @@
     "Aphelocoma coerulescens":    { "plate": 87,  "audubon": "Florida Jay" },
     "Cyanocitta stelleri":        { "plate": 363, "audubon": "Steller's Jay" },
     "Nucifraga columbiana":       { "plate": 363, "audubon": "Clark's Crow" },
+    "Pica hudsonia":              { "plate": 357, "audubon": "American Magpie" },
 
     "Setophaga ruticilla":        { "plate": 40,  "audubon": "American Redstart" },
     "Setophaga petechia":         { "plate": 95,  "audubon": "Blue-eyed yellow Warbler" },

@@ -146,6 +146,18 @@ class TestTvSettings:
         monkeypatch.setenv("TV_KEEP_UPLOADS", "0")
         assert Settings.from_env().tv_keep_uploads == 1
 
+    def test_the_tv_is_checked_far_more_often_than_it_rotates(self):
+        """It is how BirdFrame notices somebody picked up the remote, so it
+        cannot be tied to the rotation."""
+        s = Settings()
+        assert s.art_check_seconds < s.rotate_seconds
+
+    def test_the_check_has_a_floor(self, monkeypatch):
+        """It is a round trip to the TV; once a second is a pointless amount of
+        traffic for something a person did with a remote."""
+        monkeypatch.setenv("ART_CHECK_SECONDS", "1")
+        assert Settings.from_env().art_check_seconds == 5
+
 
 class TestLight:
     def test_the_default_is_the_gallery_raking_light(self):

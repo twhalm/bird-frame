@@ -258,6 +258,11 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
     if (tv.last_error) {
       sub.textContent = tv.last_error;
       sub.style.color = "var(--warn)";
+    } else if (tv.off_reason && !tv.enabled) {
+      // The switch moved on its own because somebody picked up the remote.
+      // Say so, or it reads as BirdFrame having dropped the connection.
+      sub.textContent = tv.off_reason;
+      sub.style.color = "";
     } else if (!tv.configured) {
       sub.textContent = "set TV_HOST to drive a Frame";
       sub.style.color = "";

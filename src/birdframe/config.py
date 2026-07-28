@@ -101,6 +101,10 @@ class Settings:
     # How long one composition hangs before the next. Every change is an upload
     # to the TV's internal flash, so this wants to be minutes, not seconds.
     rotate_seconds: int = 900
+    # How often to check whether the TV is still in art mode. The Frame's power
+    # button switches between the TV and art mode, so this is how BirdFrame
+    # notices somebody has sat down to watch something and gets out of the way.
+    art_check_seconds: int = 60
     # Uploads kept on the TV. The one showing plus a little history, so a select
     # never races a delete of the image it just chose.
     tv_keep_uploads: int = 3
@@ -176,6 +180,7 @@ class Settings:
             tv_port=_int("TV_PORT", 8002, minimum=1),
             tv_name=os.environ.get("TV_NAME", "BirdFrame").strip() or "BirdFrame",
             rotate_seconds=_int("ROTATE_SECONDS", 900, minimum=30),
+            art_check_seconds=_int("ART_CHECK_SECONDS", 60, minimum=5),
             tv_keep_uploads=_int("TV_KEEP_UPLOADS", 3, minimum=1),
             art_on_start=_flag("ART_ON_START", False),
             frame_size=(

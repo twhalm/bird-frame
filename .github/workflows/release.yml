@@ -113,11 +113,36 @@ jobs:
           echo "$body" | grep -q "\"version\": *\"${V}\""
           curl -fsS http://127.0.0.1:8080/ > /dev/null
           curl -fsS -X POST http://127.0.0.1:8080/api/demo | grep -q '"added": *6'
+          # The switch and a real composed JPEG behind it, so a Pillow that
+          # installed but cannot decode is caught before :latest moves.
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"enabled":true}' http://127.0.0.1:8080/api/tv | grep -q '"enabled": *true'
+          curl -fsS -o preview.jpg http://127.0.0.1:8080/preview.jpg
+          file preview.jpg | grep -q JPEG
           docker logs smoke
           docker rm -f smoke
+
+      - name: Point :latest at the release
+        # Deliberately last, and only once the *published* image has booted.
+        # Portainer and friends poll this tag for a new digest and redeploy
+        # without anyone looking first, so it must never name a build that
+        # failed its smoke test. The version tag is pushed regardless, which is
+        # what makes rolling back a matter of pinning.
+        #
+        # imagetools re-points the tag at the multi-arch manifest that was just
+        # pushed: no rebuild and no layers re-uploaded, so :latest resolves to
+        # the same image as the version tag rather than to a second build that
+        # happens to agree with it. Addressed by digest rather than by the
+        # version tag, so this cannot pick up anything else that touched the
+        # registry in between.
+        if: steps.semrel.outputs.version != ''
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}@${{ steps.build.outputs.digest }}"
 
       - name: Summarise
         if: steps.semrel.outputs.version != ''
         run: |
-          echo "Pushed \`${IMAGE}:${{ steps.semrel.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \`${IMAGE}:${{ steps.semrel.outputs.version }}\` and \`${IMAGE}:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "Digest: \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"

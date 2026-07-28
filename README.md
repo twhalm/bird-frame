@@ -10,8 +10,6 @@ The web UI is one switch. On hangs the birds, off sends the panel back to sleep.
 ## Run it
 
 The image is published to GHCR and is public, so nothing needs authenticating.
-Only released versions are published — there is no `:latest`, so pick a version
-from [releases](https://github.com/twhalm/bird-frame/releases):
 
 ```bash
 docker run -d --name birdframe -p 8088:8088 \
@@ -19,8 +17,16 @@ docker run -d --name birdframe -p 8088:8088 \
   -e PORT=8088 \
   -e BIRDNET_URL=http://birdnet-go:8080 \
   -e TV_HOST=192.168.1.50 \
-  ghcr.io/twhalm/bird-frame:1.0.0
+  ghcr.io/twhalm/bird-frame:latest
 ```
+
+`:latest` follows the newest release, which is what you want if something is
+watching the tag and redeploying for you. It only moves after the published
+image has been pulled and booted in CI, so it never names a build that failed
+its own smoke test. Pin to a version from
+[releases](https://github.com/twhalm/bird-frame/releases) instead if you would
+rather decide when to update; every release keeps its own immutable tag, so
+rolling back is a matter of pinning the one before.
 
 Or as a compose stack — this is the whole thing, and works as-is in Portainer
 (Stacks -> Add stack -> Web editor):
@@ -28,7 +34,7 @@ Or as a compose stack — this is the whole thing, and works as-is in Portainer
 ```yaml
 services:
   birdframe:
-    image: ghcr.io/twhalm/bird-frame:1.0.0
+    image: ghcr.io/twhalm/bird-frame:latest
     container_name: birdframe
     restart: unless-stopped
     ports:
@@ -79,6 +85,7 @@ string as `last_error` in `/api/tv`. The two common ones:
 | `TV_PORT` | `8002` | The secure websocket. Only change this if you know why. |
 | `TV_NAME` | `BirdFrame` | The name shown on the TV's pairing prompt. |
 | `ROTATE_SECONDS` | `900` | How long one composition hangs. See below. |
+| `ART_CHECK_SECONDS` | `60` | How often to check the TV is still in Art Mode. See below. |
 | `ART_ON_START` | `false` | Start driven rather than waiting for the switch. The switch's own position is remembered across restarts regardless; this only sets the very first state. |
 | `TV_KEEP_UPLOADS` | `3` | Pictures kept on the TV before the oldest is deleted. |
 | `LIGHT` | `-35,40` | Bevel light azimuth and elevation, in degrees. |
@@ -109,6 +116,21 @@ of gigabytes a week to a panel that was not built for it.
 
 A newly heard bird does not wait for the interval. The gallery wakes the driver,
 so a first-of-the-year cardinal is on the wall within a few seconds.
+
+### The remote wins
+
+The Frame's power button switches between the TV and Art Mode, so leaving Art
+Mode is just what happens when somebody sits down to watch something. BirdFrame
+checks every `ART_CHECK_SECONDS` and, if the panel is no longer in Art Mode,
+turns its own switch off and stops pushing. Otherwise the next rotation would
+put the TV back into Art Mode part way through their programme.
+
+Turning it back on is manual, from the switch. A person with a remote outranks a
+background thread, and second-guessing that is how an appliance becomes annoying.
+
+An unreachable TV is not treated as the same thing. A Frame switched off at the
+wall, or a dropped websocket, leaves the switch on and retries once a minute —
+that is an outage to wait out, not an instruction.
 
 ## Why it polls instead of using webhooks
 

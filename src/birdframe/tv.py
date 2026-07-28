@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,12 @@ log = logging.getLogger("birdframe.tv")
 # wall comes back on its own after the TV is switched on, long enough that an
 # absent TV does not fill the log.
 RETRY_SECONDS = 60
+
+# How long after putting the TV into art mode to believe our own reading of it.
+# The panel does not report the new mode instantly, and without this a short
+# ART_CHECK_SECONDS would see the old value and turn the switch straight back
+# off.
+TAKEOVER_GRACE_SECONDS = 15
 
 
 class TVError(RuntimeError):
@@ -177,6 +184,17 @@ class ArtDriver:
         # Set once the TV has been told to leave art mode, so a disabled driver
         # is not sending set_artmode(False) every time it is woken.
         self._settled = False
+        # True between a confirmed push and giving the panel back. Only while
+        # holding does an "art mode is off" reading mean somebody took the TV;
+        # before the first push it just means we have not put anything up yet.
+        self._holding = False
+        self._held_since = 0.0
+        # Why the switch went off on its own, for the page to explain itself.
+        self._off_reason: str | None = None
+        # When the next composition is due, on the monotonic clock. The loop
+        # wakes more often than this to watch the TV, so the rotation cannot be
+        # tracked by the sleep length any more.
+        self._next_rotation = 0.0
 
         self._load_state()
 
@@ -249,6 +267,11 @@ class ArtDriver:
             self._enabled = on
             self._settled = False
             self._last_error = None
+            self._off_reason = None
+            self._holding = False
+        # Hang the next composition straight away rather than finishing out the
+        # interval the last one was part way through.
+        self._next_rotation = 0.0
         log.info("art mode %s", "on" if on else "off")
         self._save_state()
         self.wake()
@@ -268,10 +291,66 @@ class ArtDriver:
         log.info("art driver stopped")
 
     def _tick(self) -> float:
-        """One cycle. Returns how long to sleep before the next one."""
+        """One cycle. Returns how long to sleep before the next one.
+
+        Two things happen on different clocks: the rotation, every
+        ``rotate_seconds``, and the check for whether somebody has taken the TV
+        back, every ``art_check_seconds``. The sleep is the shorter of the two.
+        """
         if not self.enabled:
             return self._go_dark()
 
+        if self._surrendered():
+            return self.settings.art_check_seconds
+
+        now = time.monotonic()
+        if now >= self._next_rotation:
+            self._next_rotation = now + self._hang()
+
+        remaining = self._next_rotation - time.monotonic()
+        return max(1.0, min(remaining, self.settings.art_check_seconds))
+
+    def _surrendered(self) -> bool:
+        """Has somebody picked up the remote and left Art Mode?
+
+        The Frame's power button switches between the TV and Art Mode, so this
+        is what happens every time anyone sits down to watch something. Without
+        it the next rotation would call set_artmode(True) and drag the panel
+        back to birds part way through their programme.
+
+        Returns True when the switch has just been turned off in response.
+        """
+        if not (self.settings.tv_configured and self._holding):
+            return False
+        # The TV takes a moment to report the mode we just put it in.
+        if time.monotonic() - self._held_since < TAKEOVER_GRACE_SECONDS:
+            return False
+
+        try:
+            still_ours = self.tv.art_mode_on()
+        except TVError as exc:
+            # Unreachable is NOT the same as "switched to TV". A Frame that is
+            # off at the wall, or a dropped websocket, must not silently flip
+            # the switch off - that is an outage to retry, not an instruction.
+            log.debug("could not read art mode: %s", exc)
+            return False
+
+        if still_ours:
+            return False
+
+        log.info("the TV left art mode; turning the switch off")
+        with self._lock:
+            self._enabled = False
+            self._holding = False
+            self._art_mode = False
+            # Art mode is already off, so there is nothing to tell the TV.
+            self._settled = True
+            self._off_reason = "switched off at the TV"
+        self._save_state()
+        return True
+
+    def _hang(self) -> float:
+        """Compose the next thing and put it up. Returns seconds until the next."""
         items = self.gallery.snapshot()
         slots = choose(items, self._cursor, self._path_for)
         if not slots:
@@ -294,6 +373,8 @@ class ArtDriver:
 
     def _go_dark(self) -> float:
         """Disabled: take the TV out of art mode once, then wait on the toggle."""
+        # Whoever has the panel now, it is not us.
+        self._holding = False
         if self._settled or not self.settings.tv_configured:
             self._settled = True
             return self.settings.rotate_seconds
@@ -364,6 +445,10 @@ class ArtDriver:
             self._art_mode = True
             self._last_push = utcnow_iso()
             self._last_error = None
+            # We have the panel. From here an "off" reading means somebody took
+            # it back, rather than meaning we have not put anything up yet.
+            self._holding = True
+        self._held_since = time.monotonic()
         self._save_state()
 
     # ------------------------------------------------------------- composing
@@ -415,6 +500,7 @@ class ArtDriver:
                 "uploads": len(self._uploads),
                 "rotate_seconds": self.settings.rotate_seconds,
                 "generation": self._generation,
+                "off_reason": self._off_reason,
                 "last_push": self._last_push,
                 "last_error": self._last_error,
             }

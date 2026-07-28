@@ -66,7 +66,10 @@ def tv_settings(tmp_path):
     return Settings(
         cache_dir=tmp_path / "cache",
         tv_host="10.0.0.5",
+        # Three distinct intervals, so a test asserting on one cannot pass
+        # because it happened to match another: rotate 300, check 90, retry 60.
         rotate_seconds=300,
+        art_check_seconds=90,
         tv_keep_uploads=2,
         # Small canvas: these tests care about the calls, not the pixels, and a
         # 4K render per test is a slow way to learn nothing.
@@ -93,6 +96,17 @@ def driver(tv_settings, monkeypatch, tmp_path):
 
 def heard(driver, name="Cardinalis cardinalis", common="Northern Cardinal", when="t"):
     return driver.gallery.record(name, common, 0.94, when, "test")
+
+
+def rotate(driver):
+    """Tick with a rotation due.
+
+    A bare _tick() only rotates when rotate_seconds has elapsed; the rest of the
+    time it is just checking whether the TV is still ours. Tests that mean "hang
+    the next thing" have to say so.
+    """
+    driver._next_rotation = 0.0
+    return driver._tick()
 
 
 class TestToggle:
@@ -196,17 +210,17 @@ class TestHousekeeping:
         """The Frame's storage is finite; without this it fills with old birds."""
         heard(driver)
         driver.set_enabled(True)
-        driver._tick()
-        driver._tick()
+        rotate(driver)
+        rotate(driver)
         assert driver.tv.deleted == []  # cap is 2, still inside it
-        driver._tick()
+        rotate(driver)
         assert driver.tv.deleted == ["id-1"]
 
     def test_the_showing_image_is_never_the_one_deleted(self, driver):
         heard(driver)
         driver.set_enabled(True)
         for _ in range(4):
-            driver._tick()
+            rotate(driver)
         assert driver.tv.selected[-1] not in driver.tv.deleted
 
     def test_a_failed_compose_does_not_bump_the_generation(self, driver, monkeypatch):
@@ -225,10 +239,10 @@ class TestHousekeeping:
     def test_a_failed_delete_does_not_fail_the_push(self, driver):
         heard(driver)
         driver.set_enabled(True)
-        driver._tick()
-        driver._tick()
+        rotate(driver)
+        rotate(driver)
         driver.tv.fail_on = "delete"
-        driver._tick()
+        rotate(driver)
         assert driver.status()["last_error"] is None
         assert len(driver.tv.selected) == 3
 
@@ -252,7 +266,7 @@ class TestFailure:
         driver.tv.fail_on = "upload"
         delay = driver._tick()
         assert "unplugged" in driver.status()["last_error"]
-        assert delay == RETRY_SECONDS
+        assert delay == pytest.approx(RETRY_SECONDS, abs=2)
 
     def test_it_retries_sooner_than_the_rotation(self, driver):
         driver.set_enabled(True)
@@ -265,13 +279,151 @@ class TestFailure:
         driver.tv.fail_on = "upload"
         driver._tick()
         driver.tv.fail_on = None
-        driver._tick()
+        rotate(driver)
         assert driver.status()["last_error"] is None
 
-    def test_a_healthy_tick_waits_the_full_rotation(self, driver):
+    def test_a_healthy_tick_schedules_a_full_rotation(self, driver):
+        """The sleep is capped by the TV check, but the next composition is
+        still a whole rotate_seconds away."""
         heard(driver)
         driver.set_enabled(True)
-        assert driver._tick() == driver.settings.rotate_seconds
+        before = time.monotonic()
+        driver._tick()
+        assert driver._next_rotation - before == pytest.approx(
+            driver.settings.rotate_seconds, abs=2
+        )
+
+
+class TestSurrender:
+    """Somebody picked up the remote. The Frame's power button switches between
+    the TV and Art Mode, so this happens every time anyone watches something."""
+
+    @pytest.fixture
+    def holding(self, driver, monkeypatch):
+        """A driver that has the panel, past the settle grace period."""
+        import birdframe.tv as tv_module
+
+        monkeypatch.setattr(tv_module, "TAKEOVER_GRACE_SECONDS", 0)
+        heard(driver)
+        driver.set_enabled(True)
+        driver._tick()
+        assert driver.tv.art_mode is True
+        return driver
+
+    def test_leaving_art_mode_turns_the_switch_off(self, holding):
+        holding.tv.art_mode = False  # the remote, not us
+        holding._tick()
+        assert holding.enabled is False
+
+    def test_it_does_not_drag_the_tv_back(self, holding):
+        """The actual bug: the next rotation used to call set_artmode(True) and
+        pull the panel off whatever somebody was watching."""
+        holding.tv.art_mode = False
+        holding._next_rotation = 0.0  # a rotation is due this very tick
+        before = len(holding.tv.uploaded)
+        holding._tick()
+        assert holding.tv.art_mode is False
+        assert len(holding.tv.uploaded) == before
+
+    def test_the_page_is_told_why(self, holding):
+        holding.tv.art_mode = False
+        holding._tick()
+        status = holding.status()
+        assert status["off_reason"] == "switched off at the TV"
+        assert status["last_error"] is None  # this is not a fault
+
+    def test_it_does_not_then_tell_the_tv_to_turn_off(self, holding):
+        """Art mode is already off. Sending set_artmode(False) after the user
+        switched to a TV input is a stray command at best."""
+        holding.tv.art_mode = False
+        holding._tick()
+        holding._tick()
+        assert holding.tv.art_mode_calls.count(False) == 0
+
+    def test_the_switch_stays_off_across_a_restart(self, holding, tv_settings):
+        holding.tv.art_mode = False
+        holding._tick()
+        revived = ArtDriver(tv_settings, holding.gallery, holding.index)
+        assert revived.enabled is False
+
+    def test_turning_it_back_on_clears_the_reason(self, holding):
+        holding.tv.art_mode = False
+        holding._tick()
+        holding.set_enabled(True)
+        assert holding.status()["off_reason"] is None
+
+    def test_an_unreachable_tv_does_not_flip_the_switch(self, holding):
+        """A Frame switched off at the wall, or a dropped websocket, is an
+        outage to retry - not an instruction to give up."""
+        holding.tv.fail_on = "art_mode_on"
+        holding._tick()
+        assert holding.enabled is True
+        assert holding.status()["off_reason"] is None
+
+    def test_art_mode_still_on_is_left_alone(self, holding):
+        holding._tick()
+        assert holding.enabled is True
+
+    def test_nothing_is_checked_before_the_first_push(self, driver):
+        """Art mode reads "off" until we put something up. Treating that as a
+        takeover would turn the switch off the instant it was turned on."""
+        driver.tv.art_mode = False
+        driver.set_enabled(True)
+        assert driver._surrendered() is False
+
+    def test_the_grace_period_covers_a_slow_panel(self, driver):
+        """The TV does not report the new mode instantly."""
+        heard(driver)
+        driver.set_enabled(True)
+        driver._tick()
+        driver.tv.art_mode = False  # as if the panel had not caught up yet
+        assert driver._surrendered() is False
+
+    def test_no_tv_configured_never_surrenders(self, tmp_path):
+        settings = Settings(cache_dir=tmp_path / "c", frame_size=(64, 36))
+        index = PlateIndex(settings)
+        gallery = Gallery(settings, index)
+        try:
+            d = ArtDriver(settings, gallery, index)
+            d._holding = True  # cannot actually happen without a TV
+            assert d._surrendered() is False
+        finally:
+            gallery.shutdown()
+
+
+class TestRotationClock:
+    """The loop now wakes to watch the TV more often than it rotates, so the
+    rotation cannot be tracked by how long it slept."""
+
+    def test_it_wakes_often_enough_to_notice_the_remote(self, driver):
+        heard(driver)
+        driver.set_enabled(True)
+        delay = driver._tick()
+        assert delay <= driver.settings.art_check_seconds
+
+    def test_a_check_between_rotations_does_not_re_upload(self, driver):
+        heard(driver)
+        driver.set_enabled(True)
+        driver._tick()
+        driver._tick()  # rotation is not due yet, this is only a TV check
+        assert len(driver.tv.uploaded) == 1
+
+    def test_the_rotation_still_happens_when_due(self, driver):
+        heard(driver)
+        driver.set_enabled(True)
+        driver._tick()
+        driver._next_rotation = 0.0  # as if rotate_seconds had elapsed
+        driver._tick()
+        assert len(driver.tv.uploaded) == 2
+
+    def test_turning_it_on_hangs_something_immediately(self, driver):
+        """Not after waiting out the interval the previous run was part way
+        through."""
+        heard(driver)
+        driver._tick()  # disabled; goes dark
+        driver.set_enabled(True)
+        driver._tick()
+        assert driver.tv.uploaded
 
 
 class TestGoingDark:
@@ -344,7 +496,7 @@ class TestWithoutATV:
         headless.set_enabled(True)
         headless._tick()
         first = headless.status()["generation"]
-        headless._tick()
+        rotate(headless)
         assert first > 0
         assert headless.status()["last_push"] is None
         assert headless.status()["generation"] > first
