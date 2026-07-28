@@ -89,6 +89,8 @@ string as `last_error` in `/api/tv`. The two common ones:
 | `ART_ON_START` | `false` | Start driven rather than waiting for the switch. The switch's own position is remembered across restarts regardless; this only sets the very first state. |
 | `TV_KEEP_UPLOADS` | `3` | Pictures kept on the TV before the oldest is deleted. |
 | `LIGHT` | `-35,40` | Bevel light azimuth and elevation, in degrees. |
+| `BEVEL_PX` | `5` | Depth of the 45 degree cut, in pixels of the composed image. 4-ply rag board shows a ~2mm face, which is 6px at 55" and 5px at 65". Depends on how far away you sit, so worth an eye on your own TV. |
+| `MAT_TEXTURE` | `0` | Mottling on the board, in levels of luminance. 0 is a flat fill, which is the default because on a real panel the noise read as a texture rather than as paper. 1.0-1.6 if you want to try it. |
 | `FRAME_WIDTH` / `FRAME_HEIGHT` | `3840` / `2160` | Compose at panel resolution so the TV never rescales. |
 | `POLL_SECONDS` | `60` | How often to check for detections. |
 | `POLL_LIMIT` | `15` | Detections requested per poll. |

@@ -114,6 +114,13 @@ class Settings:
     # --- composition
     frame_size: tuple[int, int] = DEFAULT_FRAME_SIZE
     light: tuple[float, float] = DEFAULT_LIGHT
+    # Pixels of the composed image, not a fraction of it: 5px is a 4-ply rag
+    # board's cut on a 4K panel. Worth an eye on your own TV from your own sofa.
+    bevel_px: int = 5
+    # Standard deviations of luminance in the board's mottling. 0 is a flat
+    # fill, which is the default: on a real panel the mottling read as a texture
+    # rather than as paper. 1.0-1.6 is the range worth trying if you disagree.
+    mat_texture: float = 0.0
 
     # --- misc
     port: int = 8080
@@ -188,6 +195,8 @@ class Settings:
                 _int("FRAME_HEIGHT", DEFAULT_FRAME_SIZE[1], minimum=180),
             ),
             light=_pair("LIGHT", DEFAULT_LIGHT),
+            bevel_px=_int("BEVEL_PX", 5, minimum=1),
+            mat_texture=max(0.0, _float("MAT_TEXTURE", 0.0)),
             port=_int("PORT", 8080, minimum=1),
             dev=_flag("DEV", False),
         )

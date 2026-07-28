@@ -173,6 +173,33 @@ class TestLight:
         monkeypatch.setenv("LIGHT", raw)
         assert Settings.from_env().light == (-35.0, 40.0)
 
+    def test_the_bevel_is_a_four_ply_cut_by_default(self):
+        """5px on a 4K panel is ~2mm of bevel face, which is 4-ply rag board."""
+        assert Settings().bevel_px == 5
+
+    def test_the_bevel_can_be_tuned_for_your_own_sofa(self, monkeypatch):
+        monkeypatch.setenv("BEVEL_PX", "7")
+        assert Settings.from_env().bevel_px == 7
+
+    def test_the_bevel_never_disappears(self, monkeypatch):
+        """A zero cut is a print floating on board with no bevel at all."""
+        monkeypatch.setenv("BEVEL_PX", "0")
+        assert Settings.from_env().bevel_px == 1
+
+    def test_the_board_is_flat_by_default(self):
+        """Mottling was tried on a real panel and read as a texture rather than
+        as paper. A constant colour has nothing for JPEG to band, either."""
+        assert Settings().mat_texture == 0.0
+        assert Settings.from_env().mat_texture == 0.0
+
+    def test_texture_can_be_turned_on(self, monkeypatch):
+        monkeypatch.setenv("MAT_TEXTURE", "1.6")
+        assert Settings.from_env().mat_texture == pytest.approx(1.6)
+
+    def test_negative_texture_is_clamped_off(self, monkeypatch):
+        monkeypatch.setenv("MAT_TEXTURE", "-3")
+        assert Settings.from_env().mat_texture == 0.0
+
     def test_frame_size_is_read_as_two_values(self, monkeypatch):
         monkeypatch.setenv("FRAME_WIDTH", "1920")
         monkeypatch.setenv("FRAME_HEIGHT", "1080")

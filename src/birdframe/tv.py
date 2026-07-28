@@ -461,7 +461,11 @@ class ArtDriver:
     def _compose(self, plates: list[Path]) -> None:
         try:
             composed = render_jpeg(
-                plates, size=self.settings.frame_size, light=self.settings.light
+                plates,
+                size=self.settings.frame_size,
+                light=self.settings.light,
+                bevel=self.settings.bevel_px,
+                texture=self.settings.mat_texture,
             )
         except Exception as exc:
             log.warning("could not compose the wall: %s", exc)
