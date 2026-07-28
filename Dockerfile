@@ -11,6 +11,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# samsungtvws comes from a git ref (see pyproject.toml), and uv shells out to
+# git to fetch it. Builder stage only - the runtime image never sees it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first, in their own layer: they change far less often than the
 # source, so editing plates.py does not re-resolve the lockfile.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -35,7 +41,7 @@ FROM python:3.13-slim-bookworm AS runtime
 ARG BIRDFRAME_VERSION=dev
 
 LABEL org.opencontainers.image.title="BirdFrame" \
-      org.opencontainers.image.description="Audubon plates on a screen, driven by BirdNET-Go detections" \
+      org.opencontainers.image.description="Audubon plates in a Samsung Frame's Art Mode, driven by BirdNET-Go detections" \
       org.opencontainers.image.source="https://github.com/twhalm/bird-frame" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${BIRDFRAME_VERSION}"

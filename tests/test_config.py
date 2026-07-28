@@ -110,11 +110,70 @@ class TestTls:
         assert Settings.from_env().verify_tls == "/certs/corp.pem"
 
 
+class TestTvSettings:
+    def test_no_tv_by_default(self):
+        """An unset TV_HOST composes but never pushes, so the preview still
+        works and nothing goes looking for a TV that is not there."""
+        assert Settings().tv_configured is False
+
+    def test_reads_the_tv_block(self, monkeypatch):
+        monkeypatch.setenv("TV_HOST", "192.168.1.50")
+        monkeypatch.setenv("TV_NAME", "Living Room")
+        monkeypatch.setenv("ROTATE_SECONDS", "1800")
+        monkeypatch.setenv("ART_ON_START", "true")
+        s = Settings.from_env()
+        assert s.tv_configured is True
+        assert (s.tv_host, s.tv_name, s.rotate_seconds) == (
+            "192.168.1.50",
+            "Living Room",
+            1800,
+        )
+        assert s.art_on_start is True
+
+    def test_the_rotation_has_a_floor(self, monkeypatch):
+        """Every change writes ~1.5MB to the TV's flash. A one-second rotation
+        is not a setting, it is a mistake."""
+        monkeypatch.setenv("ROTATE_SECONDS", "1")
+        assert Settings.from_env().rotate_seconds == 30
+
+    def test_an_empty_tv_name_falls_back(self, monkeypatch):
+        """It is what the TV shows on its pairing prompt; blank is useless."""
+        monkeypatch.setenv("TV_NAME", "   ")
+        assert Settings.from_env().tv_name == "BirdFrame"
+
+    def test_at_least_one_upload_is_kept(self, monkeypatch):
+        """Zero would mean deleting the picture currently on the wall."""
+        monkeypatch.setenv("TV_KEEP_UPLOADS", "0")
+        assert Settings.from_env().tv_keep_uploads == 1
+
+
+class TestLight:
+    def test_the_default_is_the_gallery_raking_light(self):
+        assert Settings().light == (-35.0, 40.0)
+
+    def test_reads_a_pair(self, monkeypatch):
+        monkeypatch.setenv("LIGHT", "20,55")
+        assert Settings.from_env().light == (20.0, 55.0)
+
+    @pytest.mark.parametrize("raw", ["", "  ", "20", "20,55,90", "left,up", "20,up"])
+    def test_junk_falls_back_to_the_whole_default(self, monkeypatch, raw):
+        """Half-parsing "20,up" into (20, 40) would silently relight the mat."""
+        monkeypatch.setenv("LIGHT", raw)
+        assert Settings.from_env().light == (-35.0, 40.0)
+
+    def test_frame_size_is_read_as_two_values(self, monkeypatch):
+        monkeypatch.setenv("FRAME_WIDTH", "1920")
+        monkeypatch.setenv("FRAME_HEIGHT", "1080")
+        assert Settings.from_env().frame_size == (1920, 1080)
+
+
 class TestDerived:
     def test_paths_hang_off_cache_dir(self, tmp_path):
         s = Settings(cache_dir=tmp_path)
         assert s.plate_cache_dir == tmp_path / "plates"
         assert s.history_file == tmp_path / "history.json"
+        assert s.tv_token_file == tmp_path / "tv-token.txt"
+        assert s.tv_state_file == tmp_path / "tv-state.json"
 
     def test_stale_window_is_three_cycles(self):
         assert Settings(poll_seconds=60).stale_after_seconds == 180

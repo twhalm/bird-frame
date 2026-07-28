@@ -15,6 +15,14 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 DATA_DIR = PACKAGE_DIR / "data"
 WEB_DIR = PACKAGE_DIR / "web"
 
+# The Frame's own panel. Composing at panel resolution means the TV never has to
+# rescale, which is what keeps the bevel a crisp one-pixel-accurate edge.
+DEFAULT_FRAME_SIZE = (3840, 2160)
+
+# Gallery raking light: azimuth (0 = straight above, negative = from the left)
+# and elevation above the wall plane, both in degrees. Shades the bevel.
+DEFAULT_LIGHT = (-35.0, 40.0)
+
 # The plate images live in this repo, downsized so the smallest dimension is
 # 2000px (~1.1MB each). The full-resolution repo averages 6.5MB per plate, which
 # is more than a 4K screen can show.
@@ -51,6 +59,20 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _pair(name: str, default: tuple[float, float]) -> tuple[float, float]:
+    """Parse a "a,b" pair. Anything malformed falls back to the default whole."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    parts = raw.split(",")
+    if len(parts) != 2:
+        return default
+    try:
+        return (float(parts[0]), float(parts[1]))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Runtime configuration. Immutable once built."""
@@ -72,6 +94,23 @@ class Settings:
     image_repo: str = DEFAULT_IMAGE_REPO
     verify_tls: bool | str = True
 
+    # --- the Samsung Frame
+    tv_host: str = ""
+    tv_port: int = 8002
+    tv_name: str = "BirdFrame"
+    # How long one composition hangs before the next. Every change is an upload
+    # to the TV's internal flash, so this wants to be minutes, not seconds.
+    rotate_seconds: int = 900
+    # Uploads kept on the TV. The one showing plus a little history, so a select
+    # never races a delete of the image it just chose.
+    tv_keep_uploads: int = 3
+    # Whether art mode starts driven, or waits for the toggle.
+    art_on_start: bool = False
+
+    # --- composition
+    frame_size: tuple[int, int] = DEFAULT_FRAME_SIZE
+    light: tuple[float, float] = DEFAULT_LIGHT
+
     # --- misc
     port: int = 8080
     dev: bool = False
@@ -80,15 +119,25 @@ class Settings:
     # Populated in __post_init__ so callers never have to compute it.
     plate_cache_dir: Path = field(init=False)
     history_file: Path = field(init=False)
+    tv_token_file: Path = field(init=False)
+    tv_state_file: Path = field(init=False)
 
     def __post_init__(self) -> None:
         # frozen dataclass: bypass the setattr guard for derived fields.
         object.__setattr__(self, "plate_cache_dir", self.cache_dir / "plates")
         object.__setattr__(self, "history_file", self.cache_dir / "history.json")
+        # The pairing token lives on the cache volume: without it every restart
+        # pops the "allow this device?" prompt on the TV again.
+        object.__setattr__(self, "tv_token_file", self.cache_dir / "tv-token.txt")
+        object.__setattr__(self, "tv_state_file", self.cache_dir / "tv-state.json")
 
     @property
     def polling_enabled(self) -> bool:
         return bool(self.birdnet_url)
+
+    @property
+    def tv_configured(self) -> bool:
+        return bool(self.tv_host)
 
     @property
     def recent_url(self) -> str:
@@ -123,6 +172,17 @@ class Settings:
             cache_dir=Path(os.environ.get("CACHE_DIR", "/cache")),
             image_repo=os.environ.get("IMAGE_REPO", DEFAULT_IMAGE_REPO).rstrip("/"),
             verify_tls=verify,
+            tv_host=os.environ.get("TV_HOST", "").strip(),
+            tv_port=_int("TV_PORT", 8002, minimum=1),
+            tv_name=os.environ.get("TV_NAME", "BirdFrame").strip() or "BirdFrame",
+            rotate_seconds=_int("ROTATE_SECONDS", 900, minimum=30),
+            tv_keep_uploads=_int("TV_KEEP_UPLOADS", 3, minimum=1),
+            art_on_start=_flag("ART_ON_START", False),
+            frame_size=(
+                _int("FRAME_WIDTH", DEFAULT_FRAME_SIZE[0], minimum=320),
+                _int("FRAME_HEIGHT", DEFAULT_FRAME_SIZE[1], minimum=180),
+            ),
+            light=_pair("LIGHT", DEFAULT_LIGHT),
             port=_int("PORT", 8080, minimum=1),
             dev=_flag("DEV", False),
         )

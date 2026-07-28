@@ -1,4 +1,4 @@
-"""BirdFrame - turns BirdNET-Go detections into Audubon plates on a screen.
+"""BirdFrame - turns BirdNET-Go detections into Audubon plates on a Samsung Frame.
 
 Two ways in:
 
@@ -6,7 +6,9 @@ Two ways in:
   * the poller     - we poll BirdNET-Go's /api/v2/detections/recent (see poller.py
                      for why this is the one you actually want).
 
-Both feed the same gallery.
+Both feed the same gallery, and the art driver (tv.py) hangs whatever is in it
+on the TV. The web UI is a light switch: on puts the birds in Art Mode, off
+sends the panel back to sleep.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from .gallery import DEMO_BIRDS, Gallery, utcnow_iso
 from .payload import parse_webhook
 from .plates import PlateIndex
 from .poller import Poller
+from .tv import ArtDriver
 
 log = logging.getLogger("birdframe")
 
@@ -39,12 +42,14 @@ def create_app(
     settings: Settings | None = None,
     *,
     start_poller: bool = True,
+    start_driver: bool = True,
     load_history: bool = True,
 ) -> Flask:
     """Build the application.
 
-    The poller and the history restore are wired up here rather than at import
-    time, so importing this module has no side effects and tests can opt out.
+    The poller, the art driver and the history restore are wired up here rather
+    than at import time, so importing this module has no side effects and tests
+    can opt out.
     """
     settings = settings or Settings.from_env()
 
@@ -70,14 +75,23 @@ def create_app(
         poller.start()
         atexit.register(poller.stop)
 
+    driver = ArtDriver(settings, gallery, index)
+    # A bird that lands while the driver is asleep should go up now, not at the
+    # end of the rotation interval.
+    gallery.on_change = driver.wake
+    if start_driver:
+        driver.start()
+        atexit.register(driver.stop)
+
     app.extensions["birdframe"] = {
         "settings": settings,
         "index": index,
         "gallery": gallery,
         "poller": poller,
+        "driver": driver,
     }
 
-    _register_routes(app, settings, index, gallery)
+    _register_routes(app, settings, index, gallery, driver)
     return app
 
 
@@ -103,11 +117,54 @@ def _authorised(settings: Settings) -> bool:
 
 
 def _register_routes(
-    app: Flask, settings: Settings, index: PlateIndex, gallery: Gallery
+    app: Flask,
+    settings: Settings,
+    index: PlateIndex,
+    gallery: Gallery,
+    driver: ArtDriver,
 ) -> None:
     @app.get("/")
     def home() -> str:
-        return render_template("frame.html")
+        return render_template("index.html")
+
+    @app.get("/api/tv")
+    def api_tv() -> Response:
+        """What the Frame is doing. Polled by the toggle page."""
+        return jsonify(driver.status())
+
+    @app.post("/api/tv")
+    def api_tv_set() -> tuple[Response, int] | Response:
+        """Flip Art Mode on or off.
+
+        Returns immediately: the driver thread does the talking, so an
+        unreachable TV cannot hang this request. Watch `last_error` in the
+        status for whether it actually landed.
+        """
+        if not _authorised(settings):
+            return jsonify({"ok": False, "error": "unauthorised"}), 401
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+            return jsonify({"ok": False, "error": 'expected {"enabled": bool}'}), 400
+
+        driver.set_enabled(payload["enabled"])
+        return jsonify({"ok": True, **driver.status()})
+
+    @app.get("/preview.jpg")
+    def preview() -> Response:
+        """The composition currently on the wall, exactly as the TV has it.
+
+        This is the same renderer the upload uses, so what you see here is what
+        is hanging - it is not a second implementation of the mat.
+        """
+        body = driver.preview()
+        if not body:
+            abort(503, "nothing composed yet")
+        resp = Response(body, mimetype="image/jpeg")
+        # It changes every rotation, and it is the only way to tell the page
+        # updated at all.
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.get("/api/current")
     def api_current() -> Response:
@@ -188,5 +245,9 @@ def _register_routes(
         body = gallery.health()
         ok = gallery.is_healthy()
         # Which release is on the wall, so you can tell from Portainer whether a
-        # redeploy actually took.
-        return jsonify({"ok": ok, "version": __version__, **body}), (200 if ok else 503)
+        # redeploy actually took. The TV block is reported but deliberately does
+        # NOT affect `ok`: a Frame that is switched off at the wall is a normal
+        # evening, not an unhealthy container.
+        return jsonify(
+            {"ok": ok, "version": __version__, "tv": driver.status(), **body}
+        ), (200 if ok else 503)

@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -166,6 +167,9 @@ class Gallery:
         # Bounded: a poll cycle can yield a dozen new species at once, and an
         # unbounded thread-per-detection spawn is how you get a thread storm.
         self._warmers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warm")
+        # Wired to the art driver by create_app, so a bird that lands mid-nap
+        # goes up now rather than at the end of the rotation interval.
+        self.on_change: Callable[[], None] | None = None
 
     # --------------------------------------------------------------- de-dupe
 
@@ -243,11 +247,27 @@ class Gallery:
         # Warm the cache off the request thread so the webhook returns fast.
         self._warmers.submit(self.index.ensure_cached, match.plate, match.file_name)
         self.save()
+        self._notify()
 
         log.info(
             "%s -> plate %d (%s)", entry.common_name, match.plate, match.audubon_name
         )
         return RecordResult(True, "displayed")
+
+    def _notify(self) -> None:
+        """Tell the art driver something changed.
+
+        Deliberately swallowing: a listener that raises must not turn a good
+        webhook into a 500, and the driver will pick the change up on its next
+        cycle anyway.
+        """
+        listener = self.on_change
+        if listener is None:
+            return
+        try:
+            listener()
+        except Exception as exc:
+            log.warning("on_change listener raised: %s", exc)
 
     # ------------------------------------------------------------------ reads
 

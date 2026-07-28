@@ -13,10 +13,63 @@ from birdframe.config import Settings
 
 @pytest.mark.usefixtures("no_warm")
 class TestHome:
-    def test_serves_the_frame(self, client):
+    def test_serves_the_toggle(self, client):
         r = client.get("/")
         assert r.status_code == 200
-        assert b"BirdFrame" in r.data
+        assert b"Art Mode" in r.data
+
+
+@pytest.mark.usefixtures("no_warm")
+class TestTvApi:
+    def test_reports_status(self, client):
+        body = client.get("/api/tv").get_json()
+        assert body["enabled"] is False
+        assert body["configured"] is False  # no TV_HOST in the test settings
+
+    def test_toggling_on(self, client, app):
+        r = client.post("/api/tv", json={"enabled": True})
+        assert r.status_code == 200
+        assert r.get_json()["enabled"] is True
+        assert app.extensions["birdframe"]["driver"].enabled is True
+
+    def test_toggling_off_again(self, client):
+        client.post("/api/tv", json={"enabled": True})
+        assert (
+            client.post("/api/tv", json={"enabled": False}).get_json()["enabled"] is False
+        )
+
+    def test_a_missing_flag_is_a_400(self, client):
+        assert client.post("/api/tv", json={}).status_code == 400
+
+    def test_a_non_boolean_flag_is_a_400(self, client):
+        """ "on" is not a bool, and coercing it would make `enabled: "off"` true."""
+        assert client.post("/api/tv", json={"enabled": "on"}).status_code == 400
+
+    def test_a_non_json_body_is_a_400(self, client):
+        r = client.post("/api/tv", data="nope", content_type="text/plain")
+        assert r.status_code == 400
+
+    def test_the_toggle_does_not_block_on_the_tv(self, client, app):
+        """The driver thread does the talking. This handler only sets a flag,
+        so a TV that has been unplugged cannot hang the page."""
+        driver = app.extensions["birdframe"]["driver"]
+        calls = []
+        driver.tv.set_art_mode = lambda on: calls.append(on)
+        client.post("/api/tv", json={"enabled": True})
+        assert calls == []
+
+
+@pytest.mark.usefixtures("no_warm")
+class TestPreview:
+    def test_serves_a_jpeg_of_the_bare_mat(self, client):
+        r = client.get("/preview.jpg")
+        assert r.status_code == 200
+        assert r.mimetype == "image/jpeg"
+        assert r.data.startswith(b"\xff\xd8\xff")
+
+    def test_is_never_cached(self, client):
+        """It changes every rotation and is the only sign the page updated."""
+        assert "no-store" in client.get("/preview.jpg").headers["Cache-Control"]
 
 
 @pytest.mark.usefixtures("no_warm")
@@ -118,7 +171,9 @@ class TestWebhookAuth:
     @pytest.fixture
     def secured(self, tmp_path, no_warm):
         settings = Settings(cache_dir=tmp_path / "cache", webhook_token=self.TOKEN)
-        app = create_app(settings, start_poller=False, load_history=False)
+        app = create_app(
+            settings, start_poller=False, start_driver=False, load_history=False
+        )
         yield app.test_client()
         app.extensions["birdframe"]["gallery"].shutdown()
 
@@ -151,6 +206,15 @@ class TestWebhookAuth:
 
     def test_demo_is_also_protected(self, secured):
         assert secured.post("/api/demo").status_code == 401
+
+    def test_the_art_toggle_is_also_protected(self, secured):
+        """Otherwise anyone on the network can turn the living room TV on."""
+        r = secured.post("/api/tv", json={"enabled": True})
+        assert r.status_code == 401
+
+    def test_reading_the_status_stays_open(self, secured):
+        """Status is not sensitive, and the page needs it to render at all."""
+        assert secured.get("/api/tv").status_code == 200
 
     def test_unauthenticated_by_default(self, client):
         """No token configured means an open endpoint, which is the LAN default."""
@@ -223,6 +287,25 @@ class TestHealthz:
         assert body["cached_plates"] == 0
         assert body["history"] == 0
 
+    def test_reports_the_tv(self, client):
+        assert client.get("/healthz").get_json()["tv"]["enabled"] is False
+
+    def test_a_sleeping_tv_is_not_unhealthy(self, tmp_path, no_warm):
+        """A Frame switched off at the wall is a normal evening. Failing the
+        container healthcheck for it would restart a perfectly good app."""
+        settings = Settings(cache_dir=tmp_path / "cache", tv_host="10.0.0.5")
+        app = create_app(
+            settings, start_poller=False, start_driver=False, load_history=False
+        )
+        try:
+            driver = app.extensions["birdframe"]["driver"]
+            driver._last_error = "upload failed: unreachable"
+            r = app.test_client().get("/healthz")
+            assert r.status_code == 200
+            assert r.get_json()["tv"]["last_error"]
+        finally:
+            app.extensions["birdframe"]["gallery"].shutdown()
+
     def test_reports_the_running_version(self, client):
         """Lets you confirm from Portainer that a redeploy actually took."""
         from birdframe import __version__
@@ -234,7 +317,9 @@ class TestHealthz:
         settings = Settings(
             cache_dir=tmp_path / "cache", birdnet_url="http://birdnet.invalid"
         )
-        app = create_app(settings, start_poller=False, load_history=False)
+        app = create_app(
+            settings, start_poller=False, start_driver=False, load_history=False
+        )
         try:
             gallery = app.extensions["birdframe"]["gallery"]
             gallery.poll_health.consecutive_failures = 3
@@ -255,7 +340,9 @@ class TestFactory:
 
     def test_dev_enables_autoreload(self, tmp_path):
         settings = Settings(cache_dir=tmp_path / "cache", dev=True)
-        app = create_app(settings, start_poller=False, load_history=False)
+        app = create_app(
+            settings, start_poller=False, start_driver=False, load_history=False
+        )
         try:
             assert app.config["TEMPLATES_AUTO_RELOAD"] is True
         finally:
@@ -268,10 +355,16 @@ class TestFactory:
         """State used to live in module globals, so two apps in one process
         shared one gallery."""
         a = create_app(
-            Settings(cache_dir=tmp_path / "a"), start_poller=False, load_history=False
+            Settings(cache_dir=tmp_path / "a"),
+            start_poller=False,
+            start_driver=False,
+            load_history=False,
         )
         b = create_app(
-            Settings(cache_dir=tmp_path / "b"), start_poller=False, load_history=False
+            Settings(cache_dir=tmp_path / "b"),
+            start_poller=False,
+            start_driver=False,
+            load_history=False,
         )
         try:
             a.extensions["birdframe"]["gallery"].record(
