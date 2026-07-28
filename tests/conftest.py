@@ -33,7 +33,9 @@ def gallery(settings, index):
 
 @pytest.fixture
 def app(settings):
-    application = create_app(settings, start_poller=False, load_history=False)
+    application = create_app(
+        settings, start_poller=False, start_driver=False, load_history=False
+    )
     yield application
     application.extensions["birdframe"]["gallery"].shutdown()
 
@@ -51,3 +53,20 @@ def no_warm(monkeypatch):
     left alone, tests would try to fetch from example.invalid.
     """
     monkeypatch.setattr(PlateIndex, "ensure_cached", lambda self, plate, name: None)
+
+
+@pytest.fixture
+def plate_file(tmp_path):
+    """Write a real (tiny) JPEG and hand back its path.
+
+    compose.py measures files rather than trusting plate numbers, so anything
+    exercising the renderer needs bytes a decoder will actually accept.
+    """
+    from PIL import Image
+
+    def make(width, height, name=None):
+        path = tmp_path / (name or f"plate-{width}x{height}.jpg")
+        Image.new("RGB", (width, height), (180, 140, 90)).save(path, format="JPEG")
+        return path
+
+    return make

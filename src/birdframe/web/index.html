@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>BirdFrame</title>
+<!-- Inline, so the page makes exactly one request and the browser stops
+     asking for a /favicon.ico that will never exist. A swatch of rag board. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23ded6c4'/%3E%3Crect x='4' y='3' width='8' height='10' fill='%23fff' stroke='%23a09b8e'/%3E%3C/svg%3E">
+<style>
+/* ---------------------------------------------------------------------------
+   BirdFrame's control panel.
+
+   This page is not the artwork any more - the TV is, in Art Mode. So this is a
+   light switch: one toggle, a preview of what is hanging, and enough status to
+   tell whether the TV actually heard you.
+
+   Meant for a phone, held one-handed, in a room where the thing you are looking
+   at is the wall and not the screen in your hand.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --mat:    #ded6c4;   /* the rag board, same value the renderer uses */
+  --paper:  #f4f0e6;
+  --ink:    #2c2a25;
+  --quiet:  #7d766a;
+  --rule:   #cfc6b2;
+  --live:   #4b7f52;   /* a muted olive; nothing on this page should shout */
+  --warn:   #9a5b3d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mat:   #23211d;
+    --paper: #1a1917;
+    --ink:   #e6e0d2;
+    --quiet: #8d857a;
+    --rule:  #38352f;
+    --live:  #7fae86;
+    --warn:  #c68a6b;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  min-height: 100dvh;
+  background: var(--mat);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: clamp(16px, 4vw, 48px);
+}
+
+main {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+h1 {
+  font: 500 15px/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--quiet);
+}
+
+/* --- the preview -----------------------------------------------------------
+   The composed image itself, at whatever the TV was sent. Shown small and with
+   a soft drop shadow so it reads as a picture on a wall rather than a UI panel.
+   The board it is standing on is the same colour as the board inside it, which
+   is the point. */
+.wall {
+  aspect-ratio: 16 / 9;
+  border-radius: 2px;
+  background: var(--rule);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.10), 0 12px 28px -10px rgb(0 0 0 / 0.35);
+  overflow: hidden;
+}
+.wall img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Off means the panel is dark, so the preview should not look live. */
+  transition: opacity .5s ease, filter .5s ease;
+}
+body.off .wall img { opacity: .38; filter: grayscale(.7); }
+
+/* --- the switch ------------------------------------------------------------
+   A real checkbox underneath, so it is focusable, keyboard-operable and
+   announced properly. Everything visible is drawn from it. */
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 20px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.track {
+  flex: 0 0 auto;
+  width: 58px;
+  height: 34px;
+  border-radius: 17px;
+  background: var(--rule);
+  position: relative;
+  transition: background .28s ease;
+}
+.track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+  transition: transform .28s cubic-bezier(.3, 1.4, .5, 1);
+}
+.switch input:checked + .track { background: var(--live); }
+.switch input:checked + .track::after { transform: translateX(24px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--ink); outline-offset: 3px; }
+.switch input:disabled + .track { opacity: .4; }
+.switch:has(input:disabled) { cursor: not-allowed; }
+
+.label { display: flex; flex-direction: column; gap: 2px; }
+.label b { font-weight: 600; font-size: 17px; }
+.label span { font-size: 13px; color: var(--quiet); }
+
+/* --- status ---------------------------------------------------------------- */
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 18px;
+  font-size: 14px;
+  padding: 0 20px;
+}
+dt { color: var(--quiet); }
+dd { text-align: right; font-variant-numeric: tabular-nums; }
+dd.bad { color: var(--warn); }
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--rule);
+  padding-top: 16px;
+  font-size: 13px;
+  color: var(--quiet);
+}
+button {
+  font: inherit;
+  color: var(--quiet);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover { color: var(--ink); border-color: var(--quiet); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body class="off">
+<main>
+  <h1>BirdFrame</h1>
+
+  <div class="wall"><img id="preview" src="/preview.jpg" alt="What is hanging on the TV"></div>
+
+  <label class="switch">
+    <input type="checkbox" id="toggle" disabled>
+    <span class="track"></span>
+    <span class="label">
+      <b>Art Mode</b>
+      <span id="sub">connecting…</span>
+    </span>
+  </label>
+
+  <dl>
+    <dt>Showing</dt>       <dd id="showing">—</dd>
+    <dt>Birds in rotation</dt> <dd id="count">—</dd>
+    <dt>Changes every</dt> <dd id="rotate">—</dd>
+    <dt>Last change</dt>   <dd id="pushed">—</dd>
+  </dl>
+
+  <footer>
+    <span id="host">—</span>
+    <button id="demo" type="button">Seed demo birds</button>
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const params = new URLSearchParams(location.search);
+  // ?token=... when WEBHOOK_TOKEN is set, so the toggle and the demo button
+  // still work from a browser.
+  const token = params.get("token");
+  const auth  = url => token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
+
+  const el = id => document.getElementById(id);
+  const toggle = el("toggle");
+
+  // Bumped by the driver on every compose. Keyed on the compose rather than the
+  // push because with no TV configured nothing is ever pushed, but the rotation
+  // still turns and the preview should follow it.
+  let generation = null;
+
+  const ago = iso => {
+    if (!iso) return "never";
+    const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    if (s < 90)   return `${Math.round(s)}s ago`;
+    if (s < 5400) return `${Math.round(s / 60)}m ago`;
+    return `${Math.round(s / 3600)}h ago`;
+  };
+
+  const mins = s => s % 60 === 0 ? `${s / 60} min` : `${s}s`;
+
+  function paint(tv, gallery) {
+    document.body.classList.toggle("off", !tv.enabled);
+    toggle.checked  = tv.enabled;
+    toggle.disabled = false;
+
+    const names = (tv.showing || []).map(s => s.common_name).filter(Boolean);
+    // Off means nothing is on the wall, so naming birds would be a lie even
+    // though the driver still remembers the last composition.
+    el("showing").textContent = !tv.enabled ? "—"
+                              : names.length ? names.join(" · ")
+                              : "bare mat";
+    el("count").textContent   = gallery ? String(gallery.count) : "—";
+    el("rotate").textContent  = mins(tv.rotate_seconds);
+    // Without a TV there is nothing to push, so "never" would read as a fault.
+    el("pushed").textContent  = tv.configured ? ago(tv.last_push) : "—";
+    el("host").textContent    = tv.configured ? tv.host : "no TV configured — preview only";
+
+    // The subtitle carries the one thing worth reading: whether it worked.
+    const sub = el("sub");
+    if (tv.last_error) {
+      sub.textContent = tv.last_error;
+      sub.style.color = "var(--warn)";
+    } else if (!tv.configured) {
+      sub.textContent = "set TV_HOST to drive a Frame";
+      sub.style.color = "";
+    } else {
+      sub.textContent = tv.enabled ? "the birds are on the wall" : "the panel is asleep";
+      sub.style.color = "";
+    }
+
+    if (tv.generation && tv.generation !== generation) {
+      generation = tv.generation;
+      el("preview").src = `/preview.jpg?g=${generation}`;
+    }
+  }
+
+  async function refresh() {
+    try {
+      const [tv, current] = await Promise.all([
+        fetch("/api/tv",      { cache: "no-store" }).then(r => r.json()),
+        fetch("/api/current", { cache: "no-store" }).then(r => r.json()).catch(() => null),
+      ]);
+      paint(tv, current);
+    } catch (_) { /* server restarting; the next tick picks it up */ }
+  }
+
+  toggle.addEventListener("change", async () => {
+    const wanted = toggle.checked;
+    toggle.disabled = true;
+    el("sub").textContent = wanted ? "waking the TV…" : "putting the panel to sleep…";
+    try {
+      const r = await fetch(auth("/api/tv"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: wanted }),
+      });
+      if (r.status === 401) {
+        el("sub").textContent = "unauthorised — add ?token=… to the URL";
+        toggle.checked = !wanted;
+        toggle.disabled = false;
+        return;
+      }
+      paint(await r.json(), null);
+    } catch (_) {
+      toggle.checked = !wanted;
+    }
+    toggle.disabled = false;
+    // The driver uploads on its own thread, so give it a moment and re-read.
+    setTimeout(refresh, 1500);
+  });
+
+  el("demo").addEventListener("click", async () => {
+    try { await fetch(auth("/api/demo"), { method: "POST" }); } catch (_) {}
+    setTimeout(refresh, 1200);
+  });
+
+  refresh();
+  setInterval(refresh, 10000);
+})();
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@ name = "birdframe"
 # commits a version back here; the running version comes from BIRDFRAME_VERSION
 # and is reported by /healthz. tests/test_version.py holds this to 0.0.0.
 version = "0.0.0"
-description = "Audubon plates on a screen, driven by BirdNET-Go detections"
+description = "Audubon plates in a Samsung Frame's Art Mode, driven by BirdNET-Go detections"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -22,6 +22,15 @@ dependencies = [
   "flask>=3.1.3,<4",
   "requests>=2.34.2,<3",
   "gunicorn>=26.0.0,<27",
+  # The mat, the bevel and the two-up pairing are drawn here now that Art Mode
+  # takes a flat image rather than a web page. See compose.py.
+  "pillow>=11.3.0,<13",
+  # NickWaterton's fork, not the `samsungtvws` on PyPI: the fork is the one that
+  # keeps up with the Frame's art channel across the 2021-2024 model changes,
+  # which is exactly the part we depend on. Pinned to a commit because the fork
+  # does not cut releases, and an unpinned master is a silent upgrade of the one
+  # dependency that can take the wall down.
+  "samsungtvws @ git+https://github.com/NickWaterton/samsung-tv-ws-api.git@fe95ef1d784cd32f49bf9a07ec479576574eea07",
 ]
 
 [project.scripts]
@@ -58,6 +67,15 @@ default = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/birdframe"]
+
+[tool.hatch.metadata]
+# samsungtvws is a pinned git reference, not a PyPI version. Stating it inline
+# in project.dependencies rather than hiding it in tool.uv.sources is
+# deliberate: PyPI carries a *different* maintainer's `samsungtvws`, and a bare
+# name here would quietly resolve to the wrong library for anyone not using uv.
+# This project is `Private :: Do Not Upload`, so PyPI's ban on direct
+# references costs nothing.
+allow-direct-references = true
 
 # ---------------------------------------------------------------------- ruff
 
@@ -110,6 +128,15 @@ files = ["src", "tests"]
 strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+# The fork ships no stubs and no py.typed. tv.py confines it to one small
+# wrapper class whose own surface is fully typed, so the Any stops there.
+module = ["samsungtvws.*"]
+ignore_missing_imports = true
+# Its __init__ re-exports SamsungTVWS without an __all__, which strict mode
+# reads as private. Nothing to fix on our side.
+implicit_reexport = true
 
 [[tool.mypy.overrides]]
 module = ["tests.*"]
