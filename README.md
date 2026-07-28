@@ -1,8 +1,6 @@
 # BirdFrame
 
-Puts the matching Audubon plate on a TV when BirdNET-Go hears a bird. Fullscreen,
-no text, no UI. Two portrait plates hang as a pair; a landscape plate fills the
-mat alone.
+Puts the matching Audubon plate on a TV when BirdNET-Go hears a bird.
 
 ![two portrait plates](docs/frame.png)
 
