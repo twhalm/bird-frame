@@ -1,8 +1,11 @@
-"""The rotation: what has been heard, what hangs on the wall, and the disk mirror.
+"""What has been heard, what hangs on the wall, and the disk mirror.
 
 All mutable state lives in one ``Gallery`` instance owned by the app, rather than
 in module globals, so tests can build a fresh one per case and so it is obvious
 what the single gunicorn worker is guarding.
+
+The wall shows the newest detection (see compose.choose), so the history behind it
+exists to supply a pairing partner and to fill /api/current.
 """
 
 from __future__ import annotations
@@ -164,12 +167,25 @@ class Gallery:
         self._unmatched: deque[str] = deque(maxlen=settings.unmatched_log_size)
         self.stats = Stats()
         self.poll_health = PollHealth(enabled=settings.polling_enabled)
+        # Bumped whenever the history changes. The art driver keeps the value it
+        # last hung and uses the difference as a cheap "is it worth looking?" -
+        # there is no rotation timer, so this is what tells it to look at all.
+        self._revision = 0
         # Bounded: a poll cycle can yield a dozen new species at once, and an
         # unbounded thread-per-detection spawn is how you get a thread storm.
         self._warmers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warm")
-        # Wired to the art driver by create_app, so a bird that lands mid-nap
-        # goes up now rather than at the end of the rotation interval.
+        # Wired to the art driver by create_app, so a bird that lands while the
+        # driver is asleep goes up now rather than at the next wakeup.
         self.on_change: Callable[[], None] | None = None
+
+    @property
+    def revision(self) -> int:
+        """Monotonic counter of history changes.
+
+        A plain int load, so the driver thread can read it without taking the
+        lock. Only ever increases, and only while the lock is held.
+        """
+        return self._revision
 
     # --------------------------------------------------------------- de-dupe
 
@@ -243,6 +259,10 @@ class Gallery:
         with self._lock:
             self._history.appendleft(entry)
             self.stats.matched += 1
+            # Inside this lock, not after it: _notify() below runs with the lock
+            # released, so bumping here is what guarantees the driver sees the
+            # new bird when it wakes rather than a counter that lags it.
+            self._revision += 1
 
         # Warm the cache off the request thread so the webhook returns fast.
         self._warmers.submit(self.index.ensure_cached, match.plate, match.file_name)
@@ -272,7 +292,11 @@ class Gallery:
     # ------------------------------------------------------------------ reads
 
     def snapshot(self, limit: int | None = None) -> list[Detection]:
-        """Displayable history, newest first."""
+        """Displayable history, newest first.
+
+        Index 0 is what hangs. The rest is there to supply a pairing partner and
+        to fill /api/current.
+        """
         with self._lock:
             items = [d for d in self._history if d.displayable]
         return items[:limit] if limit else items
@@ -329,33 +353,32 @@ class Gallery:
             return
 
         restored = 0
+        seeded = 0
         with self._lock:
             for item in reversed(raw[: self.settings.history_size]):
                 if not isinstance(item, dict):
                     continue
                 entry = Detection.from_dict(item)
-                if entry is not None:
-                    self._history.appendleft(entry)
-                    restored += 1
+                if entry is None:
+                    continue
+                if entry.source == "demo":
+                    # Seeded birds were never really heard, so they have no
+                    # business on the wall. The demo feature is gone; this drops
+                    # what it left on the cache volume.
+                    #
+                    # Only catches entries that carry the source. from_dict
+                    # defaults a missing one to "restored", so a file written
+                    # before `source` existed would slip through - but it has
+                    # always been written, so there is nothing to guard.
+                    seeded += 1
+                    continue
+                self._history.appendleft(entry)
+                restored += 1
+            self._revision += 1
         if restored:
             log.info("restored %d detections from previous run", restored)
+        if seeded:
+            log.info("discarded %d seeded demo detection(s)", seeded)
 
     def shutdown(self) -> None:
         self._warmers.shutdown(wait=False, cancel_futures=True)
-
-
-@dataclass(slots=True)
-class DemoBird:
-    scientific: str
-    common: str
-    confidence: float
-
-
-DEMO_BIRDS: tuple[DemoBird, ...] = (
-    DemoBird("Cardinalis cardinalis", "Northern Cardinal", 0.94),
-    DemoBird("Cyanocitta cristata", "Blue Jay", 0.91),
-    DemoBird("Colaptes auratus", "Northern Flicker", 0.88),
-    DemoBird("Zenaida macroura", "Mourning Dove", 0.86),
-    DemoBird("Baeolophus bicolor", "Tufted Titmouse", 0.83),
-    DemoBird("Sitta carolinensis", "White-breasted Nuthatch", 0.81),
-)

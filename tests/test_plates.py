@@ -6,13 +6,89 @@ the negative cases here matter more than the positive ones.
 
 from __future__ import annotations
 
+import itertools
 import json
+import re
 
 import pytest
 import requests
 import responses
 
 from birdframe.plates import PlateIndex, bucket_for, normalise
+
+# Slug-shaped folding, for comparing a plate's `name` against its own `slug`.
+# Deliberately separate from plates.normalise(), which folds to spaces for name
+# matching; here the target is the hyphenated slug the filename is built from.
+_STOPWORDS = ("of", "the", "and", "or")
+
+
+def _slugify(s: str) -> str:
+    s = s.lower().replace("’", "").replace("'", "").replace("&", "and")
+    return "-".join(re.sub(r"[^a-z0-9]+", " ", s).split())
+
+
+def _soften(s: str) -> str:
+    """Drop the words the upstream slugs lose, so both sides compare alike.
+
+    The source slugs omit stopwords the display name keeps ("Bird of Washington"
+    -> bird-washington, "Cock of the Plains" -> cock-plains). Applied to the name
+    and the slug both, this leaves only genuine name/image disagreements.
+    """
+    return "-".join(p for p in s.split("-") if p not in _STOPWORDS)
+
+
+# Upstream spelling drift between a plate's name and its own slug. Both are the
+# right bird -- the slug is what the filename uses, so it cannot be corrected
+# here without breaking the download URL.
+_SLUG_TYPOS = frozenset(
+    {
+        15,  # 'Blue Yellow back Warbler'      vs blue-yellow-backed-warbler
+        353,  # 'Chestnut-backed Titmouse, ...' vs chesnut-backed-titmouse
+    }
+)
+
+# Curated species that legitimately do not match their plate's slug: a plate
+# often depicts several birds and the slug names only the first, plus a few where
+# Audubon's label is another vernacular for the same bird.
+#
+# Held as an explicit list rather than inferred from the plate's `name`, because
+# `name` is exactly the field that was corrupt -- deriving the exemption from it
+# let a shifted row excuse itself, and this check passed on the broken data.
+_MULTI_SPECIES_PLATES = frozenset(
+    {
+        "Setophaga americana",
+        "Vireo solitarius",
+        "Petrochelidon pyrrhonota",
+        "Pandion haliaetus",
+        "Coragyps atratus",
+        "Setophaga magnolia",
+        "Accipiter gentilis",
+        "Lanius borealis",
+        "Egretta caerulea",
+        "Poecile atricapillus",
+        "Poecile rufescens",
+        "Piranga olivacea",
+        "Tyrannus forficatus",
+        "Sayornis saya",
+        "Cyanocitta stelleri",
+        "Nucifraga columbiana",
+        "Ixoreus naevius",
+        "Tachycineta thalassina",
+        "Xanthocephalus xanthocephalus",
+        "Sialia mexicana",
+        "Sialia currucoides",
+        "Setophaga coronata",
+        "Setophaga occidentalis",
+        "Setophaga nigrescens",
+        "Acanthis flammea",
+        "Setophaga tigrina",
+        "Melanerpes carolinus",
+        "Haemorhous mexicanus",
+        "Coccothraustes vespertinus",
+        "Asio flammeus",
+        "Parkesia noveboracensis",
+    }
+)
 
 
 class TestNormalise:
@@ -164,6 +240,93 @@ class TestIndexIntegrity:
 
     def test_curated_map_is_populated(self, index):
         assert len(index.by_scientific) > 200
+
+    def test_every_row_names_its_own_image(self, index):
+        """The invariant that catches a shifted `name` column.
+
+        plates.json rows once had `name` lagging one row behind the other four
+        fields for plates 361-399, so a Rufous Hummingbird resolved to
+        plate-380-tengmalms-owl.jpg -- an owl on the wall, under a hummingbird's
+        name in /api/current. `plate`, `slug`, `fileName` and `download` all
+        agreed with each other, so only a name-against-slug check finds it.
+
+        Compared by prefix because a slug names only the first species of a
+        multi-species plate ("Bank Swallow and Violet-green Swallow" ->
+        bank-swallow), and with the slug's own punctuation losses folded out.
+        """
+        offenders = {
+            p["plate"]: (p["name"], p["slug"])
+            for p in index.plates.values()
+            if p["plate"] not in _SLUG_TYPOS
+            and not _soften(_slugify(p["name"])).startswith(_soften(p["slug"]))
+        }
+        assert not offenders
+
+    def test_no_row_names_the_previous_rows_bird(self, index):
+        """The shift itself, stated directly.
+
+        Distinct from the check above: a plate whose slug is truncated fails
+        that one harmlessly, whereas naming the *previous* plate's bird is only
+        ever the off-by-one, and is what hangs a confidently wrong species.
+        """
+        rows = [index.plates[n] for n in sorted(index.plates)]
+        shifted = [
+            row["plate"]
+            for prev, row in itertools.pairwise(rows)
+            if _soften(_slugify(row["name"])).startswith(_soften(prev["slug"]))
+            and not _soften(_slugify(row["name"])).startswith(_soften(row["slug"]))
+        ]
+        assert not shifted
+
+    def test_curated_entries_resolve_to_their_own_image(self, index):
+        """No curated species may hang a picture of a different bird.
+
+        The plate numbers in curated_map.json were derived from the shifted
+        names, so they were off by one over the same range and 53 of 219
+        mappings rendered the wrong species. Checks the Audubon label against
+        the filename actually fetched.
+
+        Compared against the plate's `slug`, never its `name`: the slug is what
+        the fetched filename is built from, so it is the only trustworthy record
+        of which bird the image shows.
+        """
+        exempt = {sci.lower() for sci in _MULTI_SPECIES_PLATES}
+        wrong = {}
+        for sci, entry in index.by_scientific.items():
+            plate = index.plates.get(entry["plate"])
+            if plate is None:
+                continue  # covered by test_every_curated_plate_exists
+            if sci.lower() in exempt:
+                continue
+            label = (entry.get("audubon") or plate["name"]).split(" / ")[0]
+            if not _soften(_slugify(label)).startswith(_soften(plate["slug"])):
+                wrong[sci] = (label, plate["fileName"])
+        assert not wrong
+
+    def test_rufous_hummingbird_is_not_an_owl(self, index):
+        """The reported bug, pinned as its own case.
+
+        Selasphorus rufus resolved to plate 380, whose image is Tengmalm's Owl.
+        """
+        m = index.resolve("Selasphorus rufus", "Rufous Hummingbird")
+        assert m is not None
+        plate = index.plates[m.plate]
+        assert "owl" not in plate["fileName"]
+        assert "humming" in plate["fileName"]
+
+    def test_no_species_resolves_to_an_owl_unless_it_is_one(self, index):
+        """Sweeps both match paths, not just the curated one.
+
+        Three species reached an owl image through the common-name fallback
+        rather than through curated_map.json, so checking only the curated table
+        would have left them on the wall.
+        """
+        offenders = {}
+        for name, plate_no in index.by_common.items():
+            plate = index.plates[plate_no]
+            if "owl" in plate["fileName"] and "owl" not in name:
+                offenders[name] = plate["fileName"]
+        assert not offenders
 
 
 class TestEnsureCached:

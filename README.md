@@ -5,6 +5,10 @@ hears a bird.
 
 ![two portrait plates](docs/frame.png)
 
+The wall is whatever was heard most recently — two plates when the newest is a
+portrait, since a portrait wants a second one beside it. It changes when a bird
+is heard, not on a timer.
+
 The web UI is one switch. On hangs the birds, off sends the panel back to sleep.
 
 ## Getting it on the TV
@@ -45,9 +49,6 @@ different stack, use its host IP or attach this service to its network.
 *BirdFrame*. Say yes — this only happens once. The token is kept in
 `/cache/tv-token.txt`; delete it and toggle again if you ever need to redo it.
 
-**5. Press "Seed demo birds"** to put six plates up immediately rather than
-waiting for something to sing.
-
 The page shows a preview of exactly what was sent to the TV, so you can tell it
 is working without leaving your chair.
 
@@ -77,7 +78,6 @@ instead to decide your own timing; every release keeps its own immutable tag.
 | `TV_HOST` | *(empty)* | The Frame's IP. Empty composes but never pushes, so the preview still works. |
 | `TV_PORT` | `8002` | The secure websocket. |
 | `TV_NAME` | `BirdFrame` | Name shown on the TV's pairing prompt. |
-| `ROTATE_SECONDS` | `900` | How long one composition hangs. Each change is a ~1.5MB write to the TV's flash, so keep it in minutes. A newly heard bird jumps the queue. |
 | `ART_CHECK_SECONDS` | `60` | How often to check the TV is still in Art Mode. If it is not, the switch turns itself off. |
 | `ART_ON_START` | `false` | Sets only the very first state; the switch position is remembered across restarts. |
 | `TV_KEEP_UPLOADS` | `3` | Pictures kept on the TV before the oldest is deleted. |
@@ -88,8 +88,8 @@ instead to decide your own timing; every release keeps its own immutable tag.
 | `POLL_SECONDS` | `60` | How often to check for detections. |
 | `POLL_LIMIT` | `15` | Detections requested per poll. |
 | `MIN_CONFIDENCE` | `0.65` | Ignore anything less confident, including detections with no confidence field. |
-| `HISTORY_SIZE` | `40` | How many detections stay in rotation. |
-| `WEBHOOK_TOKEN` | *(unset)* | Shared secret for `POST /webhook`, `/api/tv` and `/api/demo`. Unset leaves them open. |
+| `HISTORY_SIZE` | `40` | How many detections are remembered. Only the newest hangs; the rest fill `/api/current` and supply a pairing partner. |
+| `WEBHOOK_TOKEN` | *(unset)* | Shared secret for `POST /webhook` and `/api/tv`. Unset leaves them open. |
 | `CACHE_DIR` | `/cache` | Plates, history and the TV token. |
 | `CA_BUNDLE` | *(unset)* | PEM for a TLS-inspecting proxy's CA. |
 | `VERIFY_TLS` | `true` | `false` skips certificate checks on plate downloads. Prefer `CA_BUNDLE`. |
@@ -100,7 +100,7 @@ instead to decide your own timing; every release keeps its own immutable tag.
 ## Endpoints
 
 `/` · `GET /api/tv` status · `POST /api/tv` `{"enabled": bool}` · `/preview.jpg` ·
-`/api/current` · `/plate/<n>` · `POST /webhook` · `POST /api/demo` · `/healthz`
+`/api/current` · `/plate/<n>` · `POST /webhook` · `/healthz`
 
 `/healthz` returns 503 once the poller has missed three cycles. The TV is
 reported there but never affects the status code.

@@ -32,10 +32,16 @@ from .plates import PlateIndex
 
 log = logging.getLogger("birdframe.tv")
 
-# How long to wait before trying a TV that just failed. Short enough that the
-# wall comes back on its own after the TV is switched on, long enough that an
-# absent TV does not fill the log.
+# How long to wait before trying again after something transient failed - an
+# unreachable TV, or a plate that would not download. Short enough that the wall
+# comes back on its own after the TV is switched on, long enough that an absent
+# TV does not fill the log.
 RETRY_SECONDS = 60
+
+# Backstop sleep for when there is nothing to watch for: the switch is off, or no
+# TV is configured. Nothing depends on this value - the toggle and every new bird
+# set the wake event - so it only bounds how long a lost wakeup could cost.
+IDLE_SECONDS = 300
 
 # How long after putting the TV into art mode to believe our own reading of it.
 # The panel does not report the new mode instantly, and without this a short
@@ -147,11 +153,16 @@ class FrameTV:
 
 
 class ArtDriver:
-    """Background thread that keeps the Frame showing the current birds.
+    """Background thread that keeps the Frame showing the newest bird.
 
     While enabled it composes the wall, uploads it, selects it and drops the
-    stale uploads, then sleeps until the rotation is due or a new bird arrives.
-    While disabled it puts the TV back to sleep and waits on the toggle.
+    stale uploads - then does nothing until what should hang actually changes.
+    There is no rotation: the wall is the most recent detection, so the only
+    reasons to send anything are a new bird, the toggle, or a failed attempt to
+    retry. While disabled it puts the TV back to sleep and waits on the toggle.
+
+    It still wakes on a timer to check whether somebody has taken the panel back
+    (see _surrendered), which is a different job from deciding what to hang.
     """
 
     def __init__(self, settings: Settings, gallery: Gallery, index: PlateIndex) -> None:
@@ -168,10 +179,24 @@ class ArtDriver:
         self._thread: threading.Thread | None = None
 
         self._enabled = settings.art_on_start
-        self._cursor = 0
         self._uploads: deque[str] = deque(maxlen=max(1, settings.tv_keep_uploads))
         self._preview: bytes | None = None
         self._showing: list[dict[str, Any]] = []
+        # What is on the wall, as two gates. Both are owned by the driver thread.
+        #
+        # _hung_revision is the cheap one: if the gallery has not changed at all
+        # there is no point running choose(), which can go to the network for a
+        # plate. It is not authoritative - the same species heard twice moves the
+        # revision without changing the picture.
+        #
+        # _hung_key is authoritative: the plate numbers actually hanging. Every
+        # upload is a ~1.5MB write to the TV's flash, so this is what stops the
+        # dawn chorus rewriting the same image every couple of minutes.
+        #
+        # None means nothing has been hung yet; () means the bare mat is up. The
+        # two must stay distinct or an empty gallery re-uploads the mat forever.
+        self._hung_revision: int | None = None
+        self._hung_key: tuple[int | None, ...] | None = None
         # Composed and pushed are different events: with no TV configured
         # nothing is ever pushed, but the wall is still being composed for the
         # preview, and the page needs something to notice that by. A counter
@@ -191,10 +216,6 @@ class ArtDriver:
         self._held_since = 0.0
         # Why the switch went off on its own, for the page to explain itself.
         self._off_reason: str | None = None
-        # When the next composition is due, on the monotonic clock. The loop
-        # wakes more often than this to watch the TV, so the rotation cannot be
-        # tracked by the sleep length any more.
-        self._next_rotation = 0.0
 
         self._load_state()
 
@@ -269,9 +290,14 @@ class ArtDriver:
             self._last_error = None
             self._off_reason = None
             self._holding = False
-        # Hang the next composition straight away rather than finishing out the
-        # interval the last one was part way through.
-        self._next_rotation = 0.0
+            # Forget what we think is hanging. Going dark takes the TV out of art
+            # mode, so whatever we last recorded is no longer on the panel - and
+            # without this, turning the switch back on with no new bird in the
+            # meantime would find both gates satisfied and do nothing at all.
+            # Inside the lock because these are written from a request thread
+            # while the driver thread may be part way through hanging.
+            self._hung_revision = None
+            self._hung_key = None
         log.info("art mode %s", "on" if on else "off")
         self._save_state()
         self.wake()
@@ -280,9 +306,7 @@ class ArtDriver:
 
     def run(self) -> None:
         log.info(
-            "art driver started: %s, rotating every %ds",
-            self.settings.tv_host or "no TV configured",
-            self.settings.rotate_seconds,
+            "art driver started: %s", self.settings.tv_host or "no TV configured"
         )
         while not self._stop.is_set():
             delay = self._tick()
@@ -293,30 +317,43 @@ class ArtDriver:
     def _tick(self) -> float:
         """One cycle. Returns how long to sleep before the next one.
 
-        Two things happen on different clocks: the rotation, every
-        ``rotate_seconds``, and the check for whether somebody has taken the TV
-        back, every ``art_check_seconds``. The sleep is the shorter of the two.
+        Nothing here is on a rotation clock. The wall changes when the gallery
+        does; the timer exists only so the driver notices somebody picking up the
+        remote, and so a transient failure gets another go.
         """
         if not self.enabled:
-            return self._go_dark()
+            self._go_dark()
+            return IDLE_SECONDS
 
+        # Before the change check, deliberately: this can turn the switch off, and
+        # a bird landing mid-programme must not drag the panel back to birds.
         if self._surrendered():
-            return self.settings.art_check_seconds
+            return self._idle()
 
-        now = time.monotonic()
-        if now >= self._next_rotation:
-            self._next_rotation = now + self._hang()
+        if self.gallery.revision == self._hung_revision:
+            # Nothing new has been heard, so there is nothing to look at. Just a
+            # TV check.
+            return self._idle()
 
-        remaining = self._next_rotation - time.monotonic()
-        return max(1.0, min(remaining, self.settings.art_check_seconds))
+        return self._idle() if self._hang() else RETRY_SECONDS
+
+    def _idle(self) -> float:
+        """How long to sleep with the wall in the state we want it.
+
+        With a TV that is the art-mode check interval. Without one there is no
+        panel to lose, so nothing needs watching and a new bird wakes us anyway.
+        """
+        if self.settings.tv_configured:
+            return float(self.settings.art_check_seconds)
+        return float(IDLE_SECONDS)
 
     def _surrendered(self) -> bool:
         """Has somebody picked up the remote and left Art Mode?
 
         The Frame's power button switches between the TV and Art Mode, so this
         is what happens every time anyone sits down to watch something. Without
-        it the next rotation would call set_artmode(True) and drag the panel
-        back to birds part way through their programme.
+        it the next bird would call set_artmode(True) and drag the panel back to
+        birds part way through their programme.
 
         Returns True when the switch has just been turned off in response.
         """
@@ -349,35 +386,75 @@ class ArtDriver:
         self._save_state()
         return True
 
-    def _hang(self) -> float:
-        """Compose the next thing and put it up. Returns seconds until the next."""
-        items = self.gallery.snapshot()
-        slots = choose(items, self._cursor, self._path_for)
-        if not slots:
-            # Nothing heard yet, or no plate could be fetched. Hang the bare mat
-            # so the wall is board rather than whatever was there before.
-            self._compose([])
-            with self._lock:
-                self._showing = []
-            return self._push_or_wait()
+    def _hang(self) -> bool:
+        """Put the newest bird on the wall.
 
-        self._compose([path for _, path in slots])
+        Returns True when the wall is showing the current birds as far as we can
+        tell - including when it already was and nothing needed sending. False
+        means something transient failed and the caller should retry; nothing is
+        recorded as hung in that case, or the failure would stick until the next
+        bird sang.
+        """
+        # Revision before the snapshot. The other way round can record a revision
+        # that covers a bird which was not in the snapshot we acted on, and that
+        # bird would then wait for the next one to arrive before it ever hung.
+        revision = self.gallery.revision
+        items = self.gallery.snapshot()
+        slots = choose(items, self._path_for)
+
         with self._lock:
             self._showing = [
                 {"plate": d.plate, "common_name": d.common_name} for d, _ in slots
             ]
-        # Advance past everything just hung, so a pair does not show the second
-        # plate again as the first of the next pair.
-        self._cursor = (self._cursor + len(slots)) % max(len(items), 1)
-        return self._push_or_wait()
 
-    def _go_dark(self) -> float:
+        if not slots and items:
+            # There are birds; their plates just are not on disk yet. Retry rather
+            # than hanging the bare mat and calling it done - latching here would
+            # leave the wall blank until the next bird sang, which is exactly what
+            # restoring the history is meant to avoid.
+            log.info("no plate available for %d bird(s) yet; will retry", len(items))
+            return False
+
+        # Plate numbers, not detections: the same species heard twice resolves to
+        # the same plate, and it is the picture that matters.
+        key = tuple(d.plate for d, _ in slots)
+        if key == self._hung_key:
+            # Same birds already up. Sending it again would cost a flash write for
+            # an identical image. Record the revision so the next tick does not
+            # even look.
+            self._hung_revision = revision
+            return True
+
+        # Nothing heard at all: the bare mat, so the wall is board rather than
+        # whatever happened to be there before.
+        if not self._compose([path for _, path in slots]):
+            # _preview still holds the previous wall. Pushing it now would put the
+            # old image up and record the new one as hanging.
+            return False
+
+        if not self.settings.tv_configured:
+            # No TV: composing is the whole job, for the preview page.
+            self._hung_revision, self._hung_key = revision, key
+            return True
+
+        try:
+            self._push()
+        except TVError as exc:
+            log.warning("push to the Frame failed: %s", exc)
+            with self._lock:
+                self._last_error = str(exc)
+            return False
+
+        self._hung_revision, self._hung_key = revision, key
+        return True
+
+    def _go_dark(self) -> None:
         """Disabled: take the TV out of art mode once, then wait on the toggle."""
         # Whoever has the panel now, it is not us.
         self._holding = False
         if self._settled or not self.settings.tv_configured:
             self._settled = True
-            return self.settings.rotate_seconds
+            return
         try:
             self.tv.set_art_mode(False)
             with self._lock:
@@ -392,21 +469,6 @@ class ArtDriver:
                 self._last_error = str(exc)
             self._settled = True
         self.tv.close()
-        return self.settings.rotate_seconds
-
-    def _push_or_wait(self) -> float:
-        if not self.settings.tv_configured:
-            # No TV: the composition still runs, so the preview on the toggle
-            # page shows what would hang. Useful for tuning the mat.
-            return self.settings.rotate_seconds
-        try:
-            self._push()
-        except TVError as exc:
-            log.warning("push to the Frame failed: %s", exc)
-            with self._lock:
-                self._last_error = str(exc)
-            return min(RETRY_SECONDS, self.settings.rotate_seconds)
-        return self.settings.rotate_seconds
 
     def _push(self) -> None:
         """Upload the current composition, show it, and tidy up behind it."""
@@ -458,7 +520,8 @@ class ArtDriver:
             return None
         return self.index.ensure_cached(detection.plate, detection.file_name)
 
-    def _compose(self, plates: list[Path]) -> None:
+    def _compose(self, plates: list[Path]) -> bool:
+        """Render the wall. False means _preview still holds the previous one."""
         try:
             composed = render_jpeg(
                 plates,
@@ -471,10 +534,11 @@ class ArtDriver:
             log.warning("could not compose the wall: %s", exc)
             with self._lock:
                 self._last_error = f"compose failed: {exc}"
-            return
+            return False
         self._preview = composed
         with self._lock:
             self._generation += 1
+        return True
 
     def preview(self) -> bytes:
         """The current composition, for the web UI. Composed on demand if the
@@ -502,7 +566,6 @@ class ArtDriver:
                 "art_mode": self._art_mode,
                 "showing": list(self._showing),
                 "uploads": len(self._uploads),
-                "rotate_seconds": self.settings.rotate_seconds,
                 "generation": self._generation,
                 "off_reason": self._off_reason,
                 "last_push": self._last_push,

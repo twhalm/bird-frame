@@ -196,15 +196,13 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
   </label>
 
   <dl>
-    <dt>Showing</dt>       <dd id="showing">—</dd>
-    <dt>Birds in rotation</dt> <dd id="count">—</dd>
-    <dt>Changes every</dt> <dd id="rotate">—</dd>
-    <dt>Last change</dt>   <dd id="pushed">—</dd>
+    <dt>Showing</dt>     <dd id="showing">—</dd>
+    <dt>Birds heard</dt> <dd id="count">—</dd>
+    <dt>Last change</dt> <dd id="pushed">—</dd>
   </dl>
 
   <footer>
     <span id="host">—</span>
-    <button id="demo" type="button">Seed demo birds</button>
   </footer>
 </main>
 
@@ -213,8 +211,8 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
   "use strict";
 
   const params = new URLSearchParams(location.search);
-  // ?token=... when WEBHOOK_TOKEN is set, so the toggle and the demo button
-  // still work from a browser.
+  // ?token=... when WEBHOOK_TOKEN is set, so the toggle still works from a
+  // browser.
   const token = params.get("token");
   const auth  = url => token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
 
@@ -222,8 +220,8 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
   const toggle = el("toggle");
 
   // Bumped by the driver on every compose. Keyed on the compose rather than the
-  // push because with no TV configured nothing is ever pushed, but the rotation
-  // still turns and the preview should follow it.
+  // push because with no TV configured nothing is ever pushed, but the wall is
+  // still composed and the preview should follow it.
   let generation = null;
 
   const ago = iso => {
@@ -233,8 +231,6 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
     if (s < 5400) return `${Math.round(s / 60)}m ago`;
     return `${Math.round(s / 3600)}h ago`;
   };
-
-  const mins = s => s % 60 === 0 ? `${s / 60} min` : `${s}s`;
 
   function paint(tv, gallery) {
     document.body.classList.toggle("off", !tv.enabled);
@@ -248,7 +244,6 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
                               : names.length ? names.join(" · ")
                               : "bare mat";
     el("count").textContent   = gallery ? String(gallery.count) : "—";
-    el("rotate").textContent  = mins(tv.rotate_seconds);
     // Without a TV there is nothing to push, so "never" would read as a fault.
     el("pushed").textContent  = tv.configured ? ago(tv.last_push) : "—";
     el("host").textContent    = tv.configured ? tv.host : "no TV configured — preview only";
@@ -310,11 +305,6 @@ button:hover { color: var(--ink); border-color: var(--quiet); }
     toggle.disabled = false;
     // The driver uploads on its own thread, so give it a moment and re-read.
     setTimeout(refresh, 1500);
-  });
-
-  el("demo").addEventListener("click", async () => {
-    try { await fetch(auth("/api/demo"), { method: "POST" }); } catch (_) {}
-    setTimeout(refresh, 1200);
   });
 
   refresh();

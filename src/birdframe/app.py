@@ -6,8 +6,8 @@ Two ways in:
   * the poller     - we poll BirdNET-Go's /api/v2/detections/recent (see poller.py
                      for why this is the one you actually want).
 
-Both feed the same gallery, and the art driver (tv.py) hangs whatever is in it
-on the TV. The web UI is a light switch: on puts the birds in Art Mode, off
+Both feed the same gallery, and the art driver (tv.py) hangs the newest bird in
+it on the TV. The web UI is a light switch: on puts the birds in Art Mode, off
 sends the panel back to sleep.
 """
 
@@ -22,7 +22,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 
 from . import __version__
 from .config import WEB_DIR, Settings
-from .gallery import DEMO_BIRDS, Gallery, utcnow_iso
+from .gallery import Gallery, utcnow_iso
 from .payload import parse_webhook
 from .plates import PlateIndex
 from .poller import Poller
@@ -76,8 +76,8 @@ def create_app(
         atexit.register(poller.stop)
 
     driver = ArtDriver(settings, gallery, index)
-    # A bird that lands while the driver is asleep should go up now, not at the
-    # end of the rotation interval.
+    # A bird that lands while the driver is asleep should go up now rather than
+    # waiting out the art-mode check interval.
     gallery.on_change = driver.wake
     if start_driver:
         driver.start()
@@ -168,9 +168,9 @@ def _register_routes(
 
     @app.get("/api/current")
     def api_current() -> Response:
-        """What the wall should show right now, plus the rotation behind it."""
-        # The whole history is the rotation. It used to be truncated to 12 here,
-        # which quietly capped HISTORY_SIZE for the page.
+        """What the wall should show right now, plus the history behind it."""
+        # `current` is what hangs; `recent` is everything still remembered. It
+        # used to be truncated to 12 here, which quietly capped HISTORY_SIZE.
         items = gallery.snapshot()
         return jsonify(
             {
@@ -221,18 +221,6 @@ def _register_routes(
         return jsonify(
             {"ok": True, "displayed": result.displayed, "reason": result.reason}
         )
-
-    @app.post("/api/demo")
-    def api_demo() -> tuple[Response, int] | Response:
-        """Seed a few detections so you can see the wall without waiting for a bird."""
-        if not _authorised(settings):
-            return jsonify({"ok": False, "error": "unauthorised"}), 401
-        now = utcnow_iso()
-        added = sum(
-            gallery.record(b.scientific, b.common, b.confidence, now, "demo").displayed
-            for b in DEMO_BIRDS
-        )
-        return jsonify({"ok": True, "added": added})
 
     @app.get("/healthz")
     def healthz() -> tuple[Response, int]:
