@@ -79,14 +79,34 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8080/healthz | tee /dev/stderr | grep -q '"ok": *true'
-          # The page must render and the demo seeder must find every plate.
+          # The page must render.
           curl -fsS http://127.0.0.1:8080/ > /dev/null
-          curl -fsS -X POST http://127.0.0.1:8080/api/demo | grep -q '"added": *6'
-          # The switch, and a real composed JPEG behind it. Pillow's wheels are
-          # the kind of dependency that installs fine and then cannot decode
-          # anything, so this renders rather than just importing.
+          # The switch goes first: the driver only composes while art mode is on,
+          # so enabling it before the bird lands means the webhook's wake finds
+          # it awake and hangs the plate straight away.
           curl -fsS -X POST -H 'Content-Type: application/json' \
             -d '{"enabled":true}' http://127.0.0.1:8080/api/tv | grep -q '"enabled": *true'
+          # A bird through the same door BirdNET-Go uses. The demo seeder that
+          # stood in here is gone: its birds entered the gallery indistinguishable
+          # from real ones.
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"scientific_name":"Cardinalis cardinalis","confidence":0.94}' \
+            http://127.0.0.1:8080/webhook | grep -q '"ok": *true'
+          # The driver composes on its own thread and fetches the plate on the
+          # way, so wait for it to report the cardinal (plate 159) as hanging.
+          # Do not skip ahead to /preview.jpg: that answers with a bare mat when
+          # nothing is composed yet, so fetching it early passes the JPEG check
+          # below without ever decoding a plate.
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/tv | grep -q '"plate": *159'; then
+              echo "composed after ${i}s"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/api/tv | tee /dev/stderr | grep -q '"plate": *159'
+          # Pillow's wheels are the kind of dependency that installs fine and
+          # then cannot decode anything, so this renders a real plate rather
+          # than just importing.
           curl -fsS -o /tmp/preview.jpg http://127.0.0.1:8080/preview.jpg
           file /tmp/preview.jpg | grep -q JPEG
       - name: Container logs
