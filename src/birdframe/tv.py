@@ -305,9 +305,7 @@ class ArtDriver:
     # ------------------------------------------------------------------ loop
 
     def run(self) -> None:
-        log.info(
-            "art driver started: %s", self.settings.tv_host or "no TV configured"
-        )
+        log.info("art driver started: %s", self.settings.tv_host or "no TV configured")
         while not self._stop.is_set():
             delay = self._tick()
             self._wake.wait(delay)

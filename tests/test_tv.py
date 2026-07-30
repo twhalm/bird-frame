@@ -7,6 +7,7 @@ class that touches the network, and every test here swaps it for a recorder.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import cast
 
@@ -87,11 +88,21 @@ def driver(tv_settings, monkeypatch, tmp_path):
     """
     from PIL import Image
 
+    lock = threading.Lock()
+
     def cached(self, plate, file_name):
         path = tmp_path / f"plate-{plate}.jpg"
-        if not path.exists():
-            size = (800, 1000) if plate % 2 else (1700, 1000)
-            Image.new("RGB", size, (170, 130, 80)).save(path, format="JPEG")
+        # Serialised and written atomically, exactly as the real ensure_cached is:
+        # recording a bird warms the cache on a thread pool, so this is called
+        # from the warmer and the test thread at once. Writing in place let them
+        # interleave into a torn JPEG, which aspect_ratio could not measure - it
+        # fell back to "portrait" and landscape plates silently paired up.
+        with lock:
+            if not path.exists():
+                size = (800, 1000) if plate % 2 else (1700, 1000)
+                tmp = path.with_suffix(".part")
+                Image.new("RGB", size, (170, 130, 80)).save(tmp, format="JPEG")
+                tmp.replace(path)
         return path
 
     monkeypatch.setattr(PlateIndex, "ensure_cached", cached)
@@ -793,10 +804,33 @@ class TestThread:
         finally:
             driver.stop(timeout=5)
 
+    def test_the_thread_does_not_re_upload_while_idle(self, driver):
+        """The guarantee, through the real loop: with nothing new heard, the wall
+        is left alone. Any tick path that uploads unconditionally shows up here as
+        a second write to the TV's flash."""
+        heard(driver)
+        driver.start()
+        try:
+            driver.set_enabled(True)
+            for _ in range(100):
+                if driver.tv.uploaded:
+                    break
+                time.sleep(0.05)
+            assert len(driver.tv.uploaded) == 1
+
+            # Poke the loop repeatedly. Waking is not a reason to re-hang.
+            for _ in range(5):
+                driver.wake()
+                time.sleep(0.05)
+            assert len(driver.tv.uploaded) == 1
+        finally:
+            driver.stop(timeout=5)
+
 
 class TestGalleryHook:
     def test_a_new_bird_wakes_the_driver(self, driver):
-        """Otherwise a bird heard at 06:02 waits out the rest of the rotation."""
+        """Otherwise a bird heard at 06:02 waits out the art-mode check interval
+        before it reaches the wall."""
         driver.gallery.on_change = driver.wake
         driver._wake.clear()
         heard(driver)

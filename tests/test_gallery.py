@@ -208,6 +208,115 @@ class TestPersistence:
         assert len(gallery.snapshot()) == settings.history_size
 
 
+class TestSeededBirdsAreDropped:
+    """Demo seeding is gone, but birds it wrote are still on the cache volume and
+    would otherwise restore and hang forever -- they round-trip faithfully."""
+
+    def _write(self, settings, entries):
+        settings.history_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.history_file.write_text(json.dumps(entries), encoding="utf-8")
+
+    def test_demo_entries_do_not_come_back(self, settings, gallery):
+        self._write(
+            settings,
+            [
+                {
+                    "plate": 1,
+                    "common_name": "Real Bird",
+                    "file_name": "x.jpg",
+                    "source": "webhook",
+                },
+                {
+                    "plate": 2,
+                    "common_name": "Seeded Bird",
+                    "file_name": "y.jpg",
+                    "source": "demo",
+                },
+            ],
+        )
+        gallery.load()
+        assert [d.common_name for d in gallery.snapshot()] == ["Real Bird"]
+
+    def test_it_says_how_many_were_discarded(self, settings, gallery, caplog):
+        caplog.set_level("INFO", logger="birdframe.gallery")
+        self._write(
+            settings,
+            [
+                {
+                    "plate": i,
+                    "common_name": f"Seeded {i}",
+                    "file_name": "y.jpg",
+                    "source": "demo",
+                }
+                for i in range(1, 4)
+            ],
+        )
+        gallery.load()
+        assert gallery.snapshot() == []
+        assert "discarded 3 seeded" in caplog.text
+
+    def test_other_sources_are_kept(self, settings, gallery):
+        """Only "demo" goes. A missing source restores as "restored", which is a
+        legacy file rather than a seeded bird."""
+        self._write(
+            settings,
+            [
+                {"plate": 1, "common_name": "A", "file_name": "x.jpg", "source": "poll"},
+                {"plate": 2, "common_name": "B", "file_name": "y.jpg"},
+            ],
+        )
+        gallery.load()
+        assert len(gallery.snapshot()) == 2
+
+
+class TestRevision:
+    """The art driver has no rotation timer, so this counter is what tells it
+    there is anything new to look at."""
+
+    def test_it_starts_at_zero(self, gallery):
+        assert gallery.revision == 0
+
+    def test_a_recorded_bird_moves_it(self, gallery, no_warm):
+        before = gallery.revision
+        assert gallery.record(*CARDINAL, 0.94, "t", "test").displayed
+        assert gallery.revision > before
+
+    def test_an_unmatched_bird_does_not_move_it(self, gallery, no_warm):
+        """Nothing was added to hang, so waking the driver would be a wasted
+        compose -- and on a cold cache, a wasted download."""
+        before = gallery.revision
+        gallery.record("Nonexistentus fakeus", "Totally Fake Bird", 0.99, "t", "test")
+        assert gallery.revision == before
+
+    def test_a_rejected_bird_does_not_move_it(self, gallery, no_warm):
+        before = gallery.revision
+        gallery.record(*CARDINAL, 0.10, "t", "test")  # below the threshold
+        assert gallery.revision == before
+
+    def test_restoring_history_moves_it_once(self, settings, gallery):
+        settings.history_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.history_file.write_text(
+            json.dumps(
+                [
+                    {"plate": 1, "common_name": "A", "file_name": "x.jpg"},
+                    {"plate": 2, "common_name": "B", "file_name": "y.jpg"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        before = gallery.revision
+        gallery.load()
+        assert gallery.revision == before + 1
+
+    def test_it_only_ever_increases(self, gallery, no_warm):
+        seen = [gallery.revision]
+        for i in range(6):  # more than history_size, so the deque drops entries
+            gallery.record(*CARDINAL, 0.94, f"t{i}", "test")
+            seen.append(gallery.revision)
+        assert seen == sorted(seen)
+        assert len(set(seen)) == len(seen)
+
+
 class TestDetectionSerialisation:
     def test_unplated_entry_omits_plate_keys(self):
         d = Detection("Sci", "Common", 0.9, "t", "test")
