@@ -112,11 +112,29 @@ jobs:
           echo "$body" | grep -q '"ok": *true'
           echo "$body" | grep -q "\"version\": *\"${V}\""
           curl -fsS http://127.0.0.1:8080/ > /dev/null
-          curl -fsS -X POST http://127.0.0.1:8080/api/demo | grep -q '"added": *6'
-          # The switch and a real composed JPEG behind it, so a Pillow that
-          # installed but cannot decode is caught before :latest moves.
+          # The switch goes first: the driver only composes while art mode is on,
+          # so enabling it before the bird lands means the webhook's wake finds
+          # it awake and hangs the plate straight away.
           curl -fsS -X POST -H 'Content-Type: application/json' \
             -d '{"enabled":true}' http://127.0.0.1:8080/api/tv | grep -q '"enabled": *true'
+          # A bird through the same door BirdNET-Go uses. The demo seeder that
+          # stood in here is gone: its birds entered the gallery indistinguishable
+          # from real ones.
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"scientific_name":"Cardinalis cardinalis","confidence":0.94}' \
+            http://127.0.0.1:8080/webhook | grep -q '"ok": *true'
+          # Wait for the driver to report the cardinal (plate 159) as hanging.
+          # /preview.jpg answers with a bare mat when nothing is composed yet, so
+          # fetching it early would pass the JPEG check without decoding a plate -
+          # and a Pillow that installed but cannot decode must be caught before
+          # :latest moves.
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/tv | grep -q '"plate": *159'; then
+              echo "composed after ${i}s"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/api/tv | tee /dev/stderr | grep -q '"plate": *159'
           curl -fsS -o preview.jpg http://127.0.0.1:8080/preview.jpg
           file preview.jpg | grep -q JPEG
           docker logs smoke

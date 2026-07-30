@@ -68,7 +68,7 @@ class TestPreview:
         assert r.data.startswith(b"\xff\xd8\xff")
 
     def test_is_never_cached(self, client):
-        """It changes every rotation and is the only sign the page updated."""
+        """It changes with every new bird and is the only sign the page updated."""
         assert "no-store" in client.get("/preview.jpg").headers["Cache-Control"]
 
 
@@ -92,8 +92,9 @@ class TestApiCurrent:
     def test_recent_is_not_capped_below_history_size(self, client, app, settings):
         """`recent` used to be sliced to 12, silently capping HISTORY_SIZE.
 
-        The page rotates over exactly this list, so a truncation here is a
-        truncation of the whole rotation.
+        Only the newest bird hangs, but this list is the log the page reports and
+        the pool a portrait draws its partner from, so a truncation here loses
+        both.
         """
         gallery = app.extensions["birdframe"]["gallery"]
         for i in range(settings.history_size):
@@ -204,9 +205,6 @@ class TestWebhookAuth:
         r = secured.post(f"/webhook?token={self.TOKEN}", json=self.PAYLOAD)
         assert r.status_code == 200
 
-    def test_demo_is_also_protected(self, secured):
-        assert secured.post("/api/demo").status_code == 401
-
     def test_the_art_toggle_is_also_protected(self, secured):
         """Otherwise anyone on the network can turn the living room TV on."""
         r = secured.post("/api/tv", json={"enabled": True})
@@ -218,23 +216,15 @@ class TestWebhookAuth:
 
     def test_unauthenticated_by_default(self, client):
         """No token configured means an open endpoint, which is the LAN default."""
-        assert client.post("/api/demo").status_code == 200
+        assert client.post("/webhook", json=self.PAYLOAD).status_code == 200
 
 
 @pytest.mark.usefixtures("no_warm")
-class TestDemo:
-    def test_seeds_the_gallery(self, client):
-        body = client.post("/api/demo").get_json()
-        assert body["ok"]
-        assert body["added"] > 0
-
-    def test_every_demo_bird_resolves(self, client, app, settings):
-        """The demo list is hardcoded, so a stale scientific name would show a
-        partly empty wall to anyone pressing 'd'."""
-        gallery = app.extensions["birdframe"]["gallery"]
-        client.post("/api/demo")
-        assert gallery.stats.unmatched == 0
-        assert gallery.stats.rejected == 0
+class TestNoDemoSeeding:
+    def test_the_demo_endpoint_is_gone(self, client):
+        """Seeded birds used to enter through the same door as real ones and were
+        indistinguishable on the wall."""
+        assert client.post("/api/demo").status_code == 404
 
 
 class TestPlateImage:

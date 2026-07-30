@@ -7,6 +7,7 @@ class that touches the network, and every test here swaps it for a recorder.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import cast
 
@@ -66,9 +67,8 @@ def tv_settings(tmp_path):
     return Settings(
         cache_dir=tmp_path / "cache",
         tv_host="10.0.0.5",
-        # Three distinct intervals, so a test asserting on one cannot pass
-        # because it happened to match another: rotate 300, check 90, retry 60.
-        rotate_seconds=300,
+        # Distinct from RETRY_SECONDS (60), so a test asserting on one cannot pass
+        # because it happened to match the other.
         art_check_seconds=90,
         tv_keep_uploads=2,
         # Small canvas: these tests care about the calls, not the pixels, and a
@@ -79,12 +79,33 @@ def tv_settings(tmp_path):
 
 @pytest.fixture
 def driver(tv_settings, monkeypatch, tmp_path):
-    """A driver with a fake TV and a real plate on disk to compose."""
+    """A driver with a fake TV and a real plate on disk per species.
+
+    One file per plate number, not one shared file: the wall only changes when
+    the plates do, so tests that mean "a different bird" have to produce a
+    different picture or they prove nothing. Odd plates are portrait and even
+    ones landscape, so pairing is exercised deliberately.
+    """
     from PIL import Image
 
-    plate = tmp_path / "plate.jpg"
-    Image.new("RGB", (800, 1000), (170, 130, 80)).save(plate, format="JPEG")
-    monkeypatch.setattr(PlateIndex, "ensure_cached", lambda self, n, name: plate)
+    lock = threading.Lock()
+
+    def cached(self, plate, file_name):
+        path = tmp_path / f"plate-{plate}.jpg"
+        # Serialised and written atomically, exactly as the real ensure_cached is:
+        # recording a bird warms the cache on a thread pool, so this is called
+        # from the warmer and the test thread at once. Writing in place let them
+        # interleave into a torn JPEG, which aspect_ratio could not measure - it
+        # fell back to "portrait" and landscape plates silently paired up.
+        with lock:
+            if not path.exists():
+                size = (800, 1000) if plate % 2 else (1700, 1000)
+                tmp = path.with_suffix(".part")
+                Image.new("RGB", size, (170, 130, 80)).save(tmp, format="JPEG")
+                tmp.replace(path)
+        return path
+
+    monkeypatch.setattr(PlateIndex, "ensure_cached", cached)
 
     index = PlateIndex(tv_settings)
     gallery = Gallery(tv_settings, index)
@@ -94,19 +115,15 @@ def driver(tv_settings, monkeypatch, tmp_path):
     gallery.shutdown()
 
 
+# Two species with portrait plates (odd numbers), so they pair with each other
+# rather than either hanging alone.
+CARDINAL = ("Cardinalis cardinalis", "Northern Cardinal")  # plate 159
+BLUEJAY = ("Cyanocitta cristata", "Blue Jay")  # plate 102, landscape
+FLICKER = ("Colaptes auratus", "Northern Flicker")  # plate 37, portrait
+
+
 def heard(driver, name="Cardinalis cardinalis", common="Northern Cardinal", when="t"):
     return driver.gallery.record(name, common, 0.94, when, "test")
-
-
-def rotate(driver):
-    """Tick with a rotation due.
-
-    A bare _tick() only rotates when rotate_seconds has elapsed; the rest of the
-    time it is just checking whether the TV is still ours. Tests that mean "hang
-    the next thing" have to say so.
-    """
-    driver._next_rotation = 0.0
-    return driver._tick()
 
 
 class TestToggle:
@@ -169,6 +186,8 @@ class TestPush:
         assert driver.preview() == driver.tv.uploaded[0]
 
     def test_art_mode_is_not_re_asserted_when_already_on(self, driver):
+        """The second tick finds the same birds already hanging, so it is only a
+        TV check -- it used to be "the rotation is not due yet"."""
         heard(driver)
         driver.set_enabled(True)
         driver._tick()
@@ -190,14 +209,28 @@ class TestPush:
         assert driver.status()["showing"] == []
         assert len(driver.tv.uploaded) == 1  # board, no print
 
-    def test_the_cursor_advances_through_the_rotation(self, driver):
-        heard(driver, "Cardinalis cardinalis", "Northern Cardinal", "t1")
-        heard(driver, "Cyanocitta cristata", "Blue Jay", "t2")
+    def test_the_newest_bird_is_the_one_that_hangs(self, driver):
+        """The whole point of the wall: what was heard most recently leads."""
+        heard(driver, *CARDINAL, when="t1")
+        heard(driver, *FLICKER, when="t2")
         driver.set_enabled(True)
         driver._tick()
-        # Both are portraits sharing one file, so only one hangs and the cursor
-        # steps by one rather than by the pair.
-        assert driver._cursor == 1
+        assert driver.status()["showing"][0]["common_name"] == "Northern Flicker"
+
+    def test_a_portrait_pairs_with_the_next_newest_portrait(self, driver):
+        heard(driver, *CARDINAL, when="t1")
+        heard(driver, *FLICKER, when="t2")
+        driver.set_enabled(True)
+        driver._tick()
+        names = [s["common_name"] for s in driver.status()["showing"]]
+        assert names == ["Northern Flicker", "Northern Cardinal"]
+
+    def test_a_landscape_bird_hangs_alone(self, driver):
+        heard(driver, *CARDINAL, when="t1")
+        heard(driver, *BLUEJAY, when="t2")
+        driver.set_enabled(True)
+        driver._tick()
+        assert [s["common_name"] for s in driver.status()["showing"]] == ["Blue Jay"]
 
     def test_disabled_never_uploads(self, driver):
         heard(driver)
@@ -205,22 +238,39 @@ class TestPush:
         assert driver.tv.uploaded == []
 
 
+def hang_new_bird(driver, index):
+    """Hear a bird nothing else in the suite uses, and tick.
+
+    Uploads only happen when the plates change, so a test that wants N uploads
+    has to supply N genuinely different birds.
+    """
+    species = [
+        ("Cardinalis cardinalis", "Northern Cardinal"),
+        ("Colaptes auratus", "Northern Flicker"),
+        ("Zenaida macroura", "Mourning Dove"),
+        ("Baeolophus bicolor", "Tufted Titmouse"),
+        ("Sitta carolinensis", "White-breasted Nuthatch"),
+        ("Cyanocitta cristata", "Blue Jay"),
+    ]
+    name, common = species[index % len(species)]
+    heard(driver, name, common, when=f"t{index}")
+    return driver._tick()
+
+
 class TestHousekeeping:
     def test_old_uploads_are_deleted_once_over_the_cap(self, driver):
         """The Frame's storage is finite; without this it fills with old birds."""
-        heard(driver)
         driver.set_enabled(True)
-        rotate(driver)
-        rotate(driver)
+        hang_new_bird(driver, 0)
+        hang_new_bird(driver, 1)
         assert driver.tv.deleted == []  # cap is 2, still inside it
-        rotate(driver)
+        hang_new_bird(driver, 2)
         assert driver.tv.deleted == ["id-1"]
 
     def test_the_showing_image_is_never_the_one_deleted(self, driver):
-        heard(driver)
         driver.set_enabled(True)
-        for _ in range(4):
-            rotate(driver)
+        for i in range(4):
+            hang_new_bird(driver, i)
         assert driver.tv.selected[-1] not in driver.tv.deleted
 
     def test_a_failed_compose_does_not_bump_the_generation(self, driver, monkeypatch):
@@ -236,13 +286,39 @@ class TestHousekeeping:
         assert driver.status()["generation"] == before
         assert "compose failed" in driver.status()["last_error"]
 
-    def test_a_failed_delete_does_not_fail_the_push(self, driver):
+    def test_a_failed_compose_uploads_nothing_and_is_retried(self, driver, monkeypatch):
+        """_preview still holds the previous wall, so pushing would put the old
+        image up and then record the new one as hanging."""
+        import birdframe.tv as tv_module
+
+        # From compose, not from tv: tv only re-exports it, and reading it back
+        # off the module under test would be reading whatever was last patched.
+        from birdframe.compose import render_jpeg
+
+        broken = True
+
+        def flaky(*args, **kwargs):
+            if broken:
+                raise OSError("x")
+            return render_jpeg(*args, **kwargs)
+
+        monkeypatch.setattr(tv_module, "render_jpeg", flaky)
+
         heard(driver)
         driver.set_enabled(True)
-        rotate(driver)
-        rotate(driver)
+        assert driver._tick() == pytest.approx(RETRY_SECONDS, abs=2)
+        assert driver.tv.uploaded == []
+
+        broken = False
+        driver._tick()
+        assert len(driver.tv.uploaded) == 1
+
+    def test_a_failed_delete_does_not_fail_the_push(self, driver):
+        driver.set_enabled(True)
+        hang_new_bird(driver, 0)
+        hang_new_bird(driver, 1)
         driver.tv.fail_on = "delete"
-        rotate(driver)
+        hang_new_bird(driver, 2)
         assert driver.status()["last_error"] is None
         assert len(driver.tv.selected) == 3
 
@@ -268,30 +344,19 @@ class TestFailure:
         assert "unplugged" in driver.status()["last_error"]
         assert delay == pytest.approx(RETRY_SECONDS, abs=2)
 
-    def test_it_retries_sooner_than_the_rotation(self, driver):
-        driver.set_enabled(True)
-        driver.tv.fail_on = "upload"
-        assert driver._tick() < driver.settings.rotate_seconds
-
-    def test_a_recovered_tv_clears_the_error(self, driver):
+    def test_a_failed_push_is_retried_and_then_clears(self, driver):
+        """A failure must not be recorded as hung: with no rotation to come round
+        again, latching here would leave the wall wrong until the next bird."""
         heard(driver)
         driver.set_enabled(True)
         driver.tv.fail_on = "upload"
-        driver._tick()
+        assert driver._tick() == pytest.approx(RETRY_SECONDS, abs=2)
+        assert driver.tv.uploaded == []
+
         driver.tv.fail_on = None
-        rotate(driver)
+        driver._tick()  # same bird, but nothing was ever hung
+        assert len(driver.tv.uploaded) == 1
         assert driver.status()["last_error"] is None
-
-    def test_a_healthy_tick_schedules_a_full_rotation(self, driver):
-        """The sleep is capped by the TV check, but the next composition is
-        still a whole rotate_seconds away."""
-        heard(driver)
-        driver.set_enabled(True)
-        before = time.monotonic()
-        driver._tick()
-        assert driver._next_rotation - before == pytest.approx(
-            driver.settings.rotate_seconds, abs=2
-        )
 
 
 class TestSurrender:
@@ -316,10 +381,15 @@ class TestSurrender:
         assert holding.enabled is False
 
     def test_it_does_not_drag_the_tv_back(self, holding):
-        """The actual bug: the next rotation used to call set_artmode(True) and
-        pull the panel off whatever somebody was watching."""
+        """The actual bug: hanging the next bird used to call set_artmode(True)
+        and pull the panel off whatever somebody was watching.
+
+        A bird is heard first, so there genuinely is something waiting to hang on
+        this tick -- otherwise the test would pass on an empty gallery and stop
+        guarding the order of the surrender check against the change check.
+        """
         holding.tv.art_mode = False
-        holding._next_rotation = 0.0  # a rotation is due this very tick
+        heard(holding, *FLICKER, when="t2")  # something new, waiting to go up
         before = len(holding.tv.uploaded)
         holding._tick()
         assert holding.tv.art_mode is False
@@ -391,9 +461,10 @@ class TestSurrender:
             gallery.shutdown()
 
 
-class TestRotationClock:
-    """The loop now wakes to watch the TV more often than it rotates, so the
-    rotation cannot be tracked by how long it slept."""
+class TestChangeDetection:
+    """The wall changes when the gallery does, never on a timer. Every upload is
+    a ~1.5MB write to the TV's flash, so sending an identical image is not a
+    harmless no-op."""
 
     def test_it_wakes_often_enough_to_notice_the_remote(self, driver):
         heard(driver)
@@ -401,29 +472,89 @@ class TestRotationClock:
         delay = driver._tick()
         assert delay <= driver.settings.art_check_seconds
 
-    def test_a_check_between_rotations_does_not_re_upload(self, driver):
+    def test_an_unchanged_gallery_does_not_re_upload(self, driver):
         heard(driver)
         driver.set_enabled(True)
         driver._tick()
-        driver._tick()  # rotation is not due yet, this is only a TV check
+        driver._tick()  # nothing new heard, so this is only a TV check
         assert len(driver.tv.uploaded) == 1
 
-    def test_the_rotation_still_happens_when_due(self, driver):
-        heard(driver)
+    def test_the_same_bird_heard_again_does_not_re_upload(self, driver):
+        """One loud bird near the microphone is heard over and over. Each is a
+        separate detection with the same plate, so gating on "did the gallery
+        change" alone would rewrite the identical image every few minutes."""
+        heard(driver, *CARDINAL, when="t1")
         driver.set_enabled(True)
         driver._tick()
-        driver._next_rotation = 0.0  # as if rotate_seconds had elapsed
+        heard(driver, *CARDINAL, when="t2")  # same species, new detection
+        driver._tick()
+        assert len(driver.tv.uploaded) == 1
+
+    def test_a_new_bird_hangs_straight_away(self, driver):
+        heard(driver, *CARDINAL, when="t1")
+        driver.set_enabled(True)
+        driver._tick()
+        heard(driver, *BLUEJAY, when="t2")
         driver._tick()
         assert len(driver.tv.uploaded) == 2
 
+    def test_a_bare_mat_is_hung_only_once(self, driver):
+        """Nothing heard yet. "The mat is up" and "nothing has been hung" have to
+        be different states, or an empty gallery re-uploads board forever."""
+        driver.set_enabled(True)
+        for _ in range(3):
+            driver._tick()
+        assert len(driver.tv.uploaded) == 1
+
+    def test_an_unfetchable_plate_is_retried_not_latched(self, driver, monkeypatch):
+        """A cold cache after a restart must not leave the wall bare until the
+        next bird sings -- that is the very thing restoring history prevents."""
+        heard(driver)
+        driver.set_enabled(True)
+
+        # Fail the fetch by pointing the driver's own resolver at nothing, rather
+        # than re-patching ensure_cached: undoing that would also undo the
+        # fixture's patch and send the retry at the real network.
+        working, driver._path_for = driver._path_for, lambda detection: None
+        assert driver._tick() == pytest.approx(RETRY_SECONDS, abs=2)
+        assert driver.tv.uploaded == []
+
+        driver._path_for = working
+        driver._tick()
+        assert len(driver.tv.uploaded) == 1
+        assert driver.status()["showing"][0]["common_name"] == "Northern Cardinal"
+
     def test_turning_it_on_hangs_something_immediately(self, driver):
-        """Not after waiting out the interval the previous run was part way
-        through."""
         heard(driver)
         driver._tick()  # disabled; goes dark
         driver.set_enabled(True)
         driver._tick()
         assert driver.tv.uploaded
+
+    def test_toggling_off_and_on_hangs_again_with_no_new_bird(self, driver):
+        """Going dark takes the TV out of art mode, so what we last hung is no
+        longer on the panel. Without forgetting it, the switch would appear to do
+        nothing at all -- and the switch is the whole UI."""
+        heard(driver)
+        driver.set_enabled(True)
+        driver._tick()
+        assert len(driver.tv.uploaded) == 1
+
+        driver.set_enabled(False)
+        driver._tick()
+        driver.set_enabled(True)
+        driver._tick()
+        assert len(driver.tv.uploaded) == 2
+        assert driver.tv.art_mode is True
+
+    def test_a_bird_heard_while_off_hangs_when_turned_on(self, driver):
+        driver.set_enabled(False)
+        heard(driver)
+        driver._tick()
+        assert driver.tv.uploaded == []
+        driver.set_enabled(True)
+        driver._tick()
+        assert len(driver.tv.uploaded) == 1
 
 
 class TestGoingDark:
@@ -490,13 +621,16 @@ class TestWithoutATV:
         headless._tick()
         assert headless.preview().startswith(b"\xff\xd8\xff")
 
-    def test_the_rotation_is_still_visible_to_the_page(self, headless):
+    def test_a_new_bird_is_visible_to_the_page(self, headless):
         """last_push never moves without a TV, so the preview has to be keyed on
         the compose instead or the page shows one image forever."""
         headless.set_enabled(True)
-        headless._tick()
+        headless._tick()  # bare mat
         first = headless.status()["generation"]
-        rotate(headless)
+        headless.gallery.record(
+            "Cardinalis cardinalis", "Northern Cardinal", 0.94, "t", "test"
+        )
+        headless._tick()
         assert first > 0
         assert headless.status()["last_push"] is None
         assert headless.status()["generation"] > first
@@ -673,10 +807,33 @@ class TestThread:
         finally:
             driver.stop(timeout=5)
 
+    def test_the_thread_does_not_re_upload_while_idle(self, driver):
+        """The guarantee, through the real loop: with nothing new heard, the wall
+        is left alone. Any tick path that uploads unconditionally shows up here as
+        a second write to the TV's flash."""
+        heard(driver)
+        driver.start()
+        try:
+            driver.set_enabled(True)
+            for _ in range(100):
+                if driver.tv.uploaded:
+                    break
+                time.sleep(0.05)
+            assert len(driver.tv.uploaded) == 1
+
+            # Poke the loop repeatedly. Waking is not a reason to re-hang.
+            for _ in range(5):
+                driver.wake()
+                time.sleep(0.05)
+            assert len(driver.tv.uploaded) == 1
+        finally:
+            driver.stop(timeout=5)
+
 
 class TestGalleryHook:
     def test_a_new_bird_wakes_the_driver(self, driver):
-        """Otherwise a bird heard at 06:02 waits out the rest of the rotation."""
+        """Otherwise a bird heard at 06:02 waits out the art-mode check interval
+        before it reaches the wall."""
         driver.gallery.on_change = driver.wake
         driver._wake.clear()
         heard(driver)

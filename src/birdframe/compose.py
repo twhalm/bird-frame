@@ -317,14 +317,15 @@ def render_jpeg(
 
 def choose[T](
     items: Sequence[T],
-    cursor: int,
     path_of: Callable[[T], Path | None],
 ) -> list[tuple[T, Path]]:
-    """Pick what hangs next, starting at ``cursor``.
+    """Pick what hangs: the newest item, plus a partner if it needs one.
 
-    A single landscape plate, or a pair of portraits. ``path_of`` resolves an
-    item to a cached file and may return None when the download failed, in
-    which case that item is skipped rather than hanging an empty opening.
+    ``items`` is newest-first, so index 0 is the bird that was just heard. A
+    single landscape plate hangs alone; a portrait wants a second portrait beside
+    it. ``path_of`` resolves an item to a cached file and may return None when
+    the download failed, in which case that item is skipped rather than hanging
+    an empty opening.
 
     This measures the real files rather than guessing from the plate number,
     because roughly 40% of the plates are landscape and getting it wrong is the
@@ -333,7 +334,7 @@ def choose[T](
     if not items:
         return []
 
-    first = items[cursor % len(items)]
+    first = items[0]
     first_path = path_of(first)
     if first_path is None:
         return []
@@ -341,12 +342,15 @@ def choose[T](
     if aspect_ratio(first_path) >= LANDSCAPE:
         return [(first, first_path)]
 
-    # Find the next portrait in the rotation to hang alongside it.
-    for step in range(1, len(items)):
-        candidate = items[(cursor + step) % len(items)]
-        if candidate is first:
-            continue
+    # Walk back through the history for the most recent other portrait to hang
+    # beside it. Every step may call path_of, which can go to the network, so on
+    # a cold cache after a restart this can be slow for one pass - but detections
+    # arriving live are pre-fetched by the gallery's warmers, so in practice this
+    # only measures files that are already on disk.
+    for candidate in items[1:]:
         candidate_path = path_of(candidate)
+        # Same file means the same species heard twice: hanging it twice would
+        # read as a mistake rather than as a pair.
         if candidate_path is None or candidate_path == first_path:
             continue
         if aspect_ratio(candidate_path) < LANDSCAPE:

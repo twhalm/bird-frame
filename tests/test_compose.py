@@ -340,21 +340,21 @@ class TestChoose:
     """Which plates hang together. Ported from the browser's compose()."""
 
     def test_nothing_to_hang(self, plate_file):
-        assert choose([], 0, lambda item: None) == []
+        assert choose([], lambda item: None) == []
 
     def test_a_landscape_plate_hangs_alone(self, plate_file):
         wide = plate_file(1700, 1000)
-        slots = choose(["a"], 0, lambda item: wide)
+        slots = choose(["a"], lambda item: wide)
         assert len(slots) == 1
 
     def test_two_portraits_pair_up(self, plate_file):
         paths = {"a": plate_file(800, 1000, "a.jpg"), "b": plate_file(820, 1000, "b.jpg")}
-        slots = choose(["a", "b"], 0, paths.get)
+        slots = choose(["a", "b"], paths.get)
         assert [item for item, _ in slots] == ["a", "b"]
 
     def test_a_lone_portrait_hangs_alone(self, plate_file):
         tall = plate_file(800, 1000)
-        slots = choose(["a"], 0, lambda item: tall)
+        slots = choose(["a"], lambda item: tall)
         assert len(slots) == 1
 
     def test_a_portrait_skips_a_landscape_to_find_its_partner(self, plate_file):
@@ -363,25 +363,30 @@ class TestChoose:
             "wide": plate_file(1700, 1000, "wide.jpg"),
             "tall2": plate_file(790, 1000, "tall2.jpg"),
         }
-        slots = choose(["tall", "wide", "tall2"], 0, paths.get)
+        slots = choose(["tall", "wide", "tall2"], paths.get)
         assert [item for item, _ in slots] == ["tall", "tall2"]
 
-    def test_the_cursor_wraps(self, plate_file):
-        wide = plate_file(1700, 1000)
-        slots = choose(["a", "b"], 5, lambda item: wide)
-        assert slots[0][0] == "b"
+    def test_the_newest_item_always_hangs_first(self, plate_file):
+        """items[0] is the bird that was just heard, and it is the whole point of
+        the wall -- so it must lead, not merely appear."""
+        paths = {
+            "newest": plate_file(800, 1000, "newest.jpg"),
+            "older": plate_file(820, 1000, "older.jpg"),
+        }
+        slots = choose(["newest", "older"], paths.get)
+        assert slots[0][0] == "newest"
 
     def test_an_unfetchable_first_plate_hangs_nothing(self, plate_file):
-        assert choose(["a"], 0, lambda item: None) == []
+        assert choose(["a"], lambda item: None) == []
 
     def test_the_same_plate_is_never_hung_twice(self, plate_file):
         """Two detections of one species share a plate number, and hanging the
         same picture side by side looks like a bug rather than a pair."""
         same = plate_file(800, 1000)
-        slots = choose(["a", "b"], 0, lambda item: same)
+        slots = choose(["a", "b"], lambda item: same)
         assert len(slots) == 1
 
     def test_the_landscape_threshold(self, plate_file):
         assert pytest.approx(1.15) == LANDSCAPE
         just_wide = plate_file(1160, 1000)
-        assert len(choose(["a", "b"], 0, lambda item: just_wide)) == 1
+        assert len(choose(["a", "b"], lambda item: just_wide)) == 1

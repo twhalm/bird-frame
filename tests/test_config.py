@@ -119,22 +119,16 @@ class TestTvSettings:
     def test_reads_the_tv_block(self, monkeypatch):
         monkeypatch.setenv("TV_HOST", "192.168.1.50")
         monkeypatch.setenv("TV_NAME", "Living Room")
-        monkeypatch.setenv("ROTATE_SECONDS", "1800")
+        monkeypatch.setenv("ART_CHECK_SECONDS", "120")
         monkeypatch.setenv("ART_ON_START", "true")
         s = Settings.from_env()
         assert s.tv_configured is True
-        assert (s.tv_host, s.tv_name, s.rotate_seconds) == (
+        assert (s.tv_host, s.tv_name, s.art_check_seconds) == (
             "192.168.1.50",
             "Living Room",
-            1800,
+            120,
         )
         assert s.art_on_start is True
-
-    def test_the_rotation_has_a_floor(self, monkeypatch):
-        """Every change writes ~1.5MB to the TV's flash. A one-second rotation
-        is not a setting, it is a mistake."""
-        monkeypatch.setenv("ROTATE_SECONDS", "1")
-        assert Settings.from_env().rotate_seconds == 30
 
     def test_an_empty_tv_name_falls_back(self, monkeypatch):
         """It is what the TV shows on its pairing prompt; blank is useless."""
@@ -145,12 +139,6 @@ class TestTvSettings:
         """Zero would mean deleting the picture currently on the wall."""
         monkeypatch.setenv("TV_KEEP_UPLOADS", "0")
         assert Settings.from_env().tv_keep_uploads == 1
-
-    def test_the_tv_is_checked_far_more_often_than_it_rotates(self):
-        """It is how BirdFrame notices somebody picked up the remote, so it
-        cannot be tied to the rotation."""
-        s = Settings()
-        assert s.art_check_seconds < s.rotate_seconds
 
     def test_the_check_has_a_floor(self, monkeypatch):
         """It is a round trip to the TV; once a second is a pointless amount of
