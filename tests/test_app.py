@@ -68,7 +68,7 @@ class TestPreview:
         assert r.data.startswith(b"\xff\xd8\xff")
 
     def test_is_never_cached(self, client):
-        """It changes every rotation and is the only sign the page updated."""
+        """It changes with every new bird and is the only sign the page updated."""
         assert "no-store" in client.get("/preview.jpg").headers["Cache-Control"]
 
 
@@ -92,8 +92,9 @@ class TestApiCurrent:
     def test_recent_is_not_capped_below_history_size(self, client, app, settings):
         """`recent` used to be sliced to 12, silently capping HISTORY_SIZE.
 
-        The page rotates over exactly this list, so a truncation here is a
-        truncation of the whole rotation.
+        Only the newest bird hangs, but this list is the log the page reports and
+        the pool a portrait draws its partner from, so a truncation here loses
+        both.
         """
         gallery = app.extensions["birdframe"]["gallery"]
         for i in range(settings.history_size):

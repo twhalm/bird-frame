@@ -1,4 +1,4 @@
-"""The rotation: filtering, de-duplication, health and the disk mirror."""
+"""The gallery: filtering, de-duplication, health and the disk mirror."""
 
 from __future__ import annotations
 

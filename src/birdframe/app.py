@@ -161,7 +161,7 @@ def _register_routes(
         if not body:
             abort(503, "nothing composed yet")
         resp = Response(body, mimetype="image/jpeg")
-        # It changes every rotation, and it is the only way to tell the page
+        # It changes with every new bird, and it is the only way to tell the page
         # updated at all.
         resp.headers["Cache-Control"] = "no-store"
         return resp
