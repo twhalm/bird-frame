@@ -291,13 +291,16 @@ class TestHousekeeping:
         image up and then record the new one as hanging."""
         import birdframe.tv as tv_module
 
-        real_render = tv_module.render_jpeg
+        # From compose, not from tv: tv only re-exports it, and reading it back
+        # off the module under test would be reading whatever was last patched.
+        from birdframe.compose import render_jpeg
+
         broken = True
 
         def flaky(*args, **kwargs):
             if broken:
                 raise OSError("x")
-            return real_render(*args, **kwargs)
+            return render_jpeg(*args, **kwargs)
 
         monkeypatch.setattr(tv_module, "render_jpeg", flaky)
 
